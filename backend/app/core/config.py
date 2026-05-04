@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     tradier_api_key: str = ""
     tradier_base_url: str = "https://sandbox.tradier.com/v1"  # swap for api.tradier.com in prod
 
+    # ── Event Intelligence APIs ──────────────────────────────
+    # Alpha Vantage NEWS_SENTIMENT uses ALPHA_VANTAGE_API_KEY when available.
+    news_api_key: str = ""
+    news_api_base_url: str = "https://newsapi.org/v2"
+    twitter_bearer_token: str = ""
+    social_sentiment_api_url: str = ""
+    social_sentiment_api_key: str = ""
+    event_intelligence_autostart: bool = False
+    event_intelligence_interval_seconds: int = 900
+    event_intelligence_symbols: list[str] = ["SPY", "QQQ", "AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "META"]
+
     # ── Database ─────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./nexus_trader.db"
 

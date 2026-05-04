@@ -6,6 +6,9 @@ Schema:
   turns       — every conversation turn (session_id, role, content, metadata)
   preferences — per-session key/value store (watchlist, active symbol, etc.)
   market_facts — cached market knowledge per symbol
+  prediction_events — adaptive options thesis journal with outcome scoring
+  market_events — news/social/catalyst events with adaptive outcome scoring
+  event_learning — learned weights by source/category/direction
 """
 from __future__ import annotations
 
@@ -56,6 +59,79 @@ CREATE TABLE IF NOT EXISTS market_facts (
     stored_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_symbol ON market_facts(session_id, symbol);
+
+CREATE TABLE IF NOT EXISTS prediction_events (
+    id                   TEXT PRIMARY KEY,
+    session_id           TEXT NOT NULL DEFAULT 'console',
+    symbol               TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    horizon_days         INTEGER NOT NULL,
+    entry_price          REAL NOT NULL,
+    predicted_direction  TEXT NOT NULL,
+    confidence           REAL NOT NULL,
+    target_price         REAL,
+    stop_loss            REAL,
+    feature_snapshot     TEXT NOT NULL,
+    rationale            TEXT NOT NULL,
+    outcome_status       TEXT NOT NULL DEFAULT 'pending',
+    outcome_checked_at   TEXT,
+    exit_price           REAL,
+    pnl_pct              REAL,
+    mistake_notes        TEXT,
+    CONSTRAINT prediction_direction_check CHECK (predicted_direction IN ('call', 'put', 'neutral')),
+    CONSTRAINT prediction_outcome_check CHECK (outcome_status IN ('pending', 'win', 'loss', 'flat'))
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_symbol_time ON prediction_events(symbol, created_at);
+CREATE INDEX IF NOT EXISTS idx_predictions_outcome ON prediction_events(symbol, outcome_status);
+
+CREATE TABLE IF NOT EXISTS market_events (
+    id                      TEXT PRIMARY KEY,
+    source                  TEXT NOT NULL,
+    source_event_id          TEXT NOT NULL,
+    symbol                  TEXT NOT NULL,
+    event_time              TEXT NOT NULL,
+    title                   TEXT NOT NULL,
+    summary                 TEXT,
+    url                     TEXT,
+    category                TEXT NOT NULL,
+    direction               TEXT NOT NULL,
+    sentiment_score         REAL NOT NULL DEFAULT 0,
+    virality_score          REAL NOT NULL DEFAULT 0,
+    source_credibility      REAL NOT NULL DEFAULT 0.5,
+    impact_score            REAL NOT NULL DEFAULT 0,
+    confidence              REAL NOT NULL DEFAULT 0,
+    option_bias             TEXT NOT NULL DEFAULT 'neutral',
+    horizon_days            INTEGER NOT NULL DEFAULT 7,
+    entry_price             REAL,
+    exit_price              REAL,
+    underlying_move_pct     REAL,
+    call_result             TEXT,
+    put_result              TEXT,
+    outcome_status          TEXT NOT NULL DEFAULT 'pending',
+    outcome_checked_at      TEXT,
+    raw_payload             TEXT NOT NULL DEFAULT '{}',
+    created_at              TEXT NOT NULL,
+    UNIQUE(source, source_event_id, symbol),
+    CONSTRAINT event_direction_check CHECK (direction IN ('bullish', 'bearish', 'neutral', 'volatility')),
+    CONSTRAINT event_option_bias_check CHECK (option_bias IN ('call', 'put', 'straddle', 'neutral')),
+    CONSTRAINT event_outcome_check CHECK (outcome_status IN ('pending', 'scored'))
+);
+CREATE INDEX IF NOT EXISTS idx_market_events_symbol_time ON market_events(symbol, event_time);
+CREATE INDEX IF NOT EXISTS idx_market_events_outcome ON market_events(symbol, outcome_status);
+CREATE INDEX IF NOT EXISTS idx_market_events_class ON market_events(category, direction, source);
+
+CREATE TABLE IF NOT EXISTS event_learning (
+    learning_key             TEXT PRIMARY KEY,
+    source                   TEXT NOT NULL,
+    category                 TEXT NOT NULL,
+    direction                TEXT NOT NULL,
+    total                    INTEGER NOT NULL DEFAULT 0,
+    call_wins                INTEGER NOT NULL DEFAULT 0,
+    put_wins                 INTEGER NOT NULL DEFAULT 0,
+    avg_underlying_move_pct  REAL NOT NULL DEFAULT 0,
+    impact_weight            REAL NOT NULL DEFAULT 1,
+    updated_at               TEXT NOT NULL
+);
 """
 
 

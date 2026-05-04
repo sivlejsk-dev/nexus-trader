@@ -94,6 +94,9 @@ The app works without any keys — the AI chat returns structured fallback respo
 | `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Fast free AI fallback (Llama 3.3) |
 | `POLYGON_API_KEY` | [polygon.io](https://polygon.io) | Real-time quotes, OHLCV history, options chains |
 | `ALPHA_VANTAGE_API_KEY` | [alphavantage.co](https://www.alphavantage.co/support/#api-key) | Historical OHLCV + RSI/MACD/SMA (free: 25 req/day) |
+| `NEWS_API_KEY` | [newsapi.org](https://newsapi.org) | Global headline ingestion for event intelligence |
+| `TWITTER_BEARER_TOKEN` | [developer.x.com](https://developer.x.com) | Social post ingestion and engagement/virality scoring |
+| `SOCIAL_SENTIMENT_API_URL` | Your provider | Pluggable financial/social sentiment feed |
 
 **Recommended minimum setup:** `GROQ_API_KEY` (free) + `ALPHA_VANTAGE_API_KEY` (free) gives you full AI chat and historical chart data.
 
@@ -107,6 +110,9 @@ GET  /api/v1/market/quote/{symbol}         — Current quote
 GET  /api/v1/market/history/{symbol}       — Historical OHLCV (up to 50 years)
 GET  /api/v1/market/analysis/{symbol}      — Quote + technicals + patterns + reasoning
 GET  /api/v1/market/patterns/{symbol}      — Pattern recognition only
+GET  /api/v1/intelligence/sources          — Configured news/social intelligence sources
+GET  /api/v1/intelligence/events/{symbol}  — Classified events + historical call/put analogues
+POST /api/v1/intelligence/ingest           — Fetch and persist fresh event intelligence
 GET  /api/v1/options/chain/{symbol}        — Options chain with enriched Greeks
 GET  /api/v1/options/unusual/{symbol}      — Unusual options activity
 GET  /api/v1/options/strategies/{symbol}   — Strategy suitability scores

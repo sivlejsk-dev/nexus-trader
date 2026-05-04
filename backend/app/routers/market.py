@@ -7,9 +7,55 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.services.market_data import market_data_service
 from app.services.pattern_recognition import pattern_engine
+from app.services.adaptive_predictions import adaptive_prediction_service
+from app.services.event_intelligence import event_intelligence_service
 from app.nexus_core.reasoning import reasoning_engine
+from app.core.config import settings
 
 router = APIRouter(prefix="/market", tags=["market"])
+
+
+@router.get("/providers")
+async def get_market_providers():
+    """Report configured market data sources without exposing secrets."""
+    return {
+        "providers": [
+            {
+                "name": "Polygon.io",
+                "configured": bool(settings.polygon_api_key),
+                "capabilities": ["realtime_quotes", "historical_ohlcv", "options_chains"],
+            },
+            {
+                "name": "Alpha Vantage",
+                "configured": bool(settings.alpha_vantage_api_key),
+                "capabilities": ["quotes", "historical_ohlcv", "technical_indicators"],
+            },
+            {
+                "name": "Yahoo Finance",
+                "configured": True,
+                "capabilities": ["delayed_quotes", "historical_ohlcv", "local_technical_indicators"],
+            },
+            {
+                "name": "Tradier",
+                "configured": bool(settings.tradier_api_key),
+                "capabilities": ["options_chains"],
+                "note": "Used as an options-chain fallback when Polygon is unavailable.",
+            },
+            {
+                "name": "Event Intelligence",
+                "configured": any(
+                    [
+                        settings.alpha_vantage_api_key,
+                        settings.news_api_key,
+                        settings.twitter_bearer_token,
+                        settings.social_sentiment_api_url,
+                    ]
+                ),
+                "capabilities": ["global_news", "social_sentiment", "viral_trends", "historical_event_outcomes"],
+            },
+        ],
+        "active_fallback_order": ["Polygon.io", "Alpha Vantage", "Yahoo Finance"],
+    }
 
 
 @router.get("/quote/{symbol}")
@@ -55,7 +101,10 @@ async def get_patterns(
 
 
 @router.get("/analysis/{symbol}")
-async def get_full_analysis(symbol: str):
+async def get_full_analysis(
+    symbol: str,
+    session_id: str = Query(default="console", description="Prediction memory namespace"),
+):
     """
     Combined quote + technicals + pattern recognition + structured reasoning.
     This is the primary endpoint for the visual console.
@@ -65,9 +114,10 @@ async def get_full_analysis(symbol: str):
     quote_task = market_data_service.get_quote(symbol.upper())
     tech_task = market_data_service.get_technicals(symbol.upper())
     hist_task = market_data_service.get_historical_ohlcv(symbol.upper(), years=2)
+    intelligence_task = event_intelligence_service.build_symbol_intelligence(symbol.upper(), fresh=True)
 
-    quote, technicals, bars = await asyncio.gather(
-        quote_task, tech_task, hist_task, return_exceptions=True
+    quote, technicals, bars, event_intelligence = await asyncio.gather(
+        quote_task, tech_task, hist_task, intelligence_task, return_exceptions=True
     )
 
     result: Dict[str, Any] = {"symbol": symbol.upper()}
@@ -76,6 +126,8 @@ async def get_full_analysis(symbol: str):
         result["quote"] = quote
     if not isinstance(technicals, Exception):
         result["technicals"] = technicals
+    if not isinstance(event_intelligence, Exception):
+        result["event_intelligence"] = event_intelligence
 
     patterns_data = {}
     if not isinstance(bars, Exception) and bars:
@@ -94,5 +146,22 @@ async def get_full_analysis(symbol: str):
             "volume": volume,
         })
         result["reasoning"] = reasoning.to_dict()
+
+    if (
+        result.get("quote")
+        and result["quote"].get("price")
+        and not isinstance(technicals, Exception)
+        and not isinstance(bars, Exception)
+        and bars
+    ):
+        result["adaptive_prediction"] = await adaptive_prediction_service.build_prediction(
+            symbol=symbol.upper(),
+            quote=result["quote"],
+            technicals=technicals if isinstance(technicals, dict) else {},
+            patterns=patterns_data,
+            bars=bars,
+            session_id=session_id,
+            event_intelligence=event_intelligence if isinstance(event_intelligence, dict) else None,
+        )
 
     return result
