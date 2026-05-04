@@ -1,0 +1,19 @@
+{
+  "name": "Nexus Trader",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/python": { "version": "3.12" },
+    "ghcr.io/devcontainers/features/node": { "version": "22" }
+  },
+  "forwardPorts": [3000, 8000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Nexus Trader UI",
+      "onAutoForward": "openPreview"
+    },
+    "8000": {
+      "label": "Nexus API",
+      "onAutoForward": "notify"
+    }
+  }
+}

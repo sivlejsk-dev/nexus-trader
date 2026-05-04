@@ -1,0 +1,30 @@
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.12
+
+# Validation & settings
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# HTTP client
+httpx==0.28.1
+
+# Retry logic
+tenacity==9.0.0
+
+# Logging
+structlog==24.4.0
+
+# AI / NLP
+textblob==0.18.0
+
+# Persistent memory
+aiosqlite==0.20.0
+
+# Numerical
+numpy==1.26.4
+
+# Dev / testing
+pytest==8.3.4
+pytest-asyncio==0.24.0

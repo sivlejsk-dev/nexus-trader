@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0a0e1a;
+  --surface: #111827;
+  --border: #1f2937;
+  --accent: #3b82f6;
+  --green: #10b981;
+  --red: #ef4444;
+  --yellow: #f59e0b;
+  --purple: #8b5cf6;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: var(--bg);
+  color: #f9fafb;
+  font-family: 'Inter', system-ui, sans-serif;
+  height: 100%;
+  margin: 0;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+/* Recharts overrides */
+.recharts-tooltip-wrapper { outline: none; }
+.recharts-default-tooltip {
+  background: #1f2937 !important;
+  border: 1px solid #374151 !important;
+  border-radius: 8px !important;
+  color: #f9fafb !important;
+}
+
+/* Markdown in chat */
+.prose-nexus h1, .prose-nexus h2, .prose-nexus h3 { color: #f9fafb; margin-top: 1rem; margin-bottom: 0.5rem; }
+.prose-nexus p { margin-bottom: 0.75rem; line-height: 1.6; }
+.prose-nexus ul, .prose-nexus ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+.prose-nexus li { margin-bottom: 0.25rem; }
+.prose-nexus code { background: #1f2937; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85em; color: #93c5fd; }
+.prose-nexus pre { background: #1f2937; padding: 1rem; border-radius: 8px; overflow-x: auto; margin-bottom: 0.75rem; }
+.prose-nexus pre code { background: none; padding: 0; }
+.prose-nexus blockquote { border-left: 3px solid #f59e0b; padding-left: 1rem; color: #d1d5db; margin: 0.75rem 0; }
+.prose-nexus table { width: 100%; border-collapse: collapse; margin-bottom: 0.75rem; font-size: 0.875rem; }
+.prose-nexus th { background: #1f2937; padding: 0.5rem 0.75rem; text-align: left; border: 1px solid #374151; }
+.prose-nexus td { padding: 0.5rem 0.75rem; border: 1px solid #374151; }
+.prose-nexus strong { color: #f9fafb; }
+.prose-nexus a { color: #60a5fa; text-decoration: underline; }
+
+/* Candlestick chart custom */
+.candle-up { fill: #10b981; stroke: #10b981; }
+.candle-down { fill: #ef4444; stroke: #ef4444; }
+
+/* Pulse animation for live data */
+@keyframes pulse-green {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.live-dot { animation: pulse-green 2s ease-in-out infinite; }
