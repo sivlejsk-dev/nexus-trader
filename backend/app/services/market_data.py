@@ -4,7 +4,7 @@ Market Data Service — multi-provider stock and options data.
 Provider priority:
   1. Polygon.io  — real-time quotes, historical OHLCV, options chains
   2. Alpha Vantage — historical OHLCV fallback (free tier)
-  3. yfinance (via subprocess/direct) — last-resort free data
+  3. Yahoo Finance chart API — last-resort free delayed stock data
 
 All public methods return normalized dicts so callers are provider-agnostic.
 """
@@ -322,6 +322,180 @@ class AlphaVantageClient:
         return None
 
 
+# ── Yahoo Finance fallback ───────────────────────────────────────────────────
+
+class YahooFinanceClient:
+    """No-key delayed equities fallback using Yahoo's public chart endpoint."""
+
+    BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
+
+    def __init__(self):
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get(self, symbol: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=30.0,
+                headers={"User-Agent": "NexusTrader/1.0"},
+            )
+        resp = await self._client.get(f"{self.BASE}/{symbol.upper()}", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+    async def get_ohlcv(
+        self,
+        symbol: str,
+        years: int = 5,
+        interval: str = "1d",
+    ) -> List[Dict[str, Any]]:
+        period = f"{max(1, min(years, 10))}y"
+        data = await self._get(symbol, {"range": period, "interval": interval, "events": "history"})
+        result = (data.get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return []
+
+        timestamps = result.get("timestamp") or []
+        quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+        adjclose = ((result.get("indicators") or {}).get("adjclose") or [{}])[0].get("adjclose") or []
+        bars: List[Dict[str, Any]] = []
+        for i, ts in enumerate(timestamps):
+            close = self._at(adjclose, i) or self._at(quote.get("close"), i)
+            open_ = self._at(quote.get("open"), i)
+            high = self._at(quote.get("high"), i)
+            low = self._at(quote.get("low"), i)
+            volume = self._at(quote.get("volume"), i) or 0
+            if close is None or open_ is None or high is None or low is None:
+                continue
+            bars.append({
+                "date": datetime.fromtimestamp(ts).strftime("%Y-%m-%d"),
+                "open": round(float(open_), 4),
+                "high": round(float(high), 4),
+                "low": round(float(low), 4),
+                "close": round(float(close), 4),
+                "volume": int(volume),
+                "vwap": None,
+            })
+        return bars
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+    async def get_quote(self, symbol: str) -> Dict[str, Any]:
+        data = await self._get(symbol, {"range": "5d", "interval": "1d"})
+        result = (data.get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return {"symbol": symbol.upper(), "price": 0, "error": "No Yahoo Finance data returned"}
+
+        meta = result.get("meta") or {}
+        bars = await self.get_ohlcv(symbol, years=1)
+        latest = bars[-1] if bars else {}
+        prev = bars[-2]["close"] if len(bars) >= 2 else meta.get("previousClose", 0)
+        price = float(meta.get("regularMarketPrice") or latest.get("close") or 0)
+        change = price - float(prev or 0) if price and prev else 0
+        change_pct = change / float(prev) * 100 if prev else 0
+
+        return {
+            "symbol": symbol.upper(),
+            "price": round(price, 4),
+            "open": latest.get("open", 0),
+            "high": latest.get("high", 0),
+            "low": latest.get("low", 0),
+            "close": latest.get("close", price),
+            "volume": latest.get("volume", 0),
+            "prev_close": round(float(prev), 4) if prev else 0,
+            "change": round(change, 4),
+            "change_pct": round(change_pct, 4),
+            "source": "yahoo_finance",
+        }
+
+    @staticmethod
+    def _at(values: Optional[List[Any]], index: int) -> Optional[float]:
+        if not values or index >= len(values):
+            return None
+        value = values[index]
+        return None if value is None else float(value)
+
+
+# ── Tradier options client ───────────────────────────────────────────────────
+
+class TradierClient:
+    """Tradier market-data client for options expirations and chains."""
+
+    def __init__(self):
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get(self, path: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+        if not settings.tradier_api_key:
+            raise ValueError("TRADIER_API_KEY not configured")
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        resp = await self._client.get(
+            f"{settings.tradier_base_url}{path}",
+            headers={
+                "Authorization": f"Bearer {settings.tradier_api_key}",
+                "Accept": "application/json",
+            },
+            params=params or {},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+    async def get_expirations(self, symbol: str) -> List[str]:
+        data = await self._get("/markets/options/expirations", {"symbol": symbol.upper()})
+        dates = data.get("expirations", {}).get("date", [])
+        if isinstance(dates, str):
+            return [dates]
+        return dates or []
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+    async def get_options_chain(
+        self,
+        symbol: str,
+        expiration_date: Optional[str] = None,
+        option_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        expiration = expiration_date
+        if not expiration:
+            expirations = await self.get_expirations(symbol)
+            if not expirations:
+                return []
+            expiration = expirations[0]
+
+        data = await self._get(
+            "/markets/options/chains",
+            {"symbol": symbol.upper(), "expiration": expiration, "greeks": "true"},
+        )
+        options = data.get("options", {}).get("option", [])
+        if isinstance(options, dict):
+            options = [options]
+
+        normalized = []
+        for contract in options:
+            contract_type = contract.get("option_type") or contract.get("type")
+            if option_type and contract_type != option_type:
+                continue
+            greeks = contract.get("greeks") or {}
+            normalized.append({
+                "ticker": contract.get("symbol"),
+                "underlying": contract.get("root_symbol") or symbol.upper(),
+                "type": contract_type,
+                "strike": contract.get("strike"),
+                "expiration": contract.get("expiration_date") or expiration,
+                "bid": contract.get("bid") or 0,
+                "ask": contract.get("ask") or 0,
+                "last": contract.get("last") or 0,
+                "volume": contract.get("volume") or 0,
+                "open_interest": contract.get("open_interest") or 0,
+                "iv": greeks.get("mid_iv") or greeks.get("smv_vol") or greeks.get("iv"),
+                "delta": greeks.get("delta"),
+                "gamma": greeks.get("gamma"),
+                "theta": greeks.get("theta"),
+                "vega": greeks.get("vega"),
+                "source": "tradier",
+            })
+        return normalized
+
+
 # ── Unified facade ────────────────────────────────────────────────────────────
 
 class MarketDataService:
@@ -334,6 +508,8 @@ class MarketDataService:
     def __init__(self):
         self.polygon = PolygonClient()
         self.alpha_vantage = AlphaVantageClient()
+        self.yahoo = YahooFinanceClient()
+        self.tradier = TradierClient()
 
     async def get_quote(self, symbol: str) -> Dict[str, Any]:
         """Get current quote for a symbol."""
@@ -347,7 +523,11 @@ class MarketDataService:
                 return await self.alpha_vantage.get_quote(symbol)
             except Exception as e:
                 log.warning("alpha_vantage_quote_failed", symbol=symbol, error=str(e))
-        return {"symbol": symbol.upper(), "price": 0, "error": "No market data provider configured"}
+        try:
+            return await self.yahoo.get_quote(symbol)
+        except Exception as e:
+            log.warning("yahoo_quote_failed", symbol=symbol, error=str(e))
+        return {"symbol": symbol.upper(), "price": 0, "error": "No market data provider configured or reachable"}
 
     async def get_historical_ohlcv(
         self,
@@ -372,6 +552,11 @@ class MarketDataService:
                 return [b for b in bars if b["date"] >= cutoff]
             except Exception as e:
                 log.warning("alpha_vantage_ohlcv_failed", symbol=symbol, error=str(e))
+
+        try:
+            return await self.yahoo.get_ohlcv(symbol, years=years)
+        except Exception as e:
+            log.warning("yahoo_ohlcv_failed", symbol=symbol, error=str(e))
 
         return []
 
@@ -402,6 +587,15 @@ class MarketDataService:
             except Exception as e:
                 log.warning("technicals_fetch_failed", symbol=symbol, error=str(e))
 
+        if not {"rsi", "macd", "sma_50", "sma_200"}.issubset(technicals):
+            try:
+                bars = await self.get_historical_ohlcv(symbol, years=2)
+                local = compute_local_technicals(bars)
+                for key, value in local.items():
+                    technicals.setdefault(key, value)
+            except Exception as e:
+                log.warning("local_technicals_failed", symbol=symbol, error=str(e))
+
         return technicals
 
     async def get_options_chain(
@@ -417,6 +611,13 @@ class MarketDataService:
                 )
             except Exception as e:
                 log.warning("polygon_options_chain_failed", symbol=symbol, error=str(e))
+        if settings.tradier_api_key:
+            try:
+                return await self.tradier.get_options_chain(
+                    symbol, expiration_date, option_type
+                )
+            except Exception as e:
+                log.warning("tradier_options_chain_failed", symbol=symbol, error=str(e))
         return []
 
     async def get_unusual_options_activity(self, symbol: str) -> List[Dict[str, Any]]:
@@ -444,3 +645,68 @@ class MarketDataService:
 
 # Singleton
 market_data_service = MarketDataService()
+
+
+# ── Local technical indicators ────────────────────────────────────────────────
+
+def compute_local_technicals(bars: List[Dict[str, Any]]) -> Dict[str, Any]:
+    closes = [float(b["close"]) for b in bars if b.get("close") is not None]
+    if len(closes) < 20:
+        return {}
+
+    macd_line, signal_line = _macd(closes)
+    result: Dict[str, Any] = {
+        "rsi": _rsi(closes, 14),
+        "sma_50": _sma(closes, 50),
+        "sma_200": _sma(closes, 200),
+    }
+    if macd_line is not None and signal_line is not None:
+        result["macd"] = round(macd_line, 4)
+        result["macd_signal"] = round(signal_line, 4)
+        result["macd_hist"] = round(macd_line - signal_line, 4)
+    return {k: v for k, v in result.items() if v is not None}
+
+
+def _sma(values: List[float], period: int) -> Optional[float]:
+    if len(values) < period:
+        return None
+    return round(sum(values[-period:]) / period, 4)
+
+
+def _ema_series(values: List[float], period: int) -> List[float]:
+    if not values:
+        return []
+    multiplier = 2 / (period + 1)
+    ema = values[0]
+    series = [ema]
+    for value in values[1:]:
+        ema = (value - ema) * multiplier + ema
+        series.append(ema)
+    return series
+
+
+def _macd(values: List[float]) -> tuple[Optional[float], Optional[float]]:
+    if len(values) < 35:
+        return None, None
+    ema12 = _ema_series(values, 12)
+    ema26 = _ema_series(values, 26)
+    macd_values = [a - b for a, b in zip(ema12, ema26)]
+    signal = _ema_series(macd_values, 9)
+    return macd_values[-1], signal[-1] if signal else None
+
+
+def _rsi(values: List[float], period: int = 14) -> Optional[float]:
+    if len(values) <= period:
+        return None
+    gains = []
+    losses = []
+    for prev, current in zip(values[-period - 1:-1], values[-period:]):
+        change = current - prev
+        gains.append(max(change, 0))
+        losses.append(abs(min(change, 0)))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 2)

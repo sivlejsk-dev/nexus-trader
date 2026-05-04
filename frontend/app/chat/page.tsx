@@ -18,15 +18,6 @@ interface Message {
   timestamp: Date;
 }
 
-const STARTERS = [
-  "Analyze AAPL technicals and give me a trade setup",
-  "What options strategy suits TSLA right now?",
-  "Explain the difference between a call debit spread and a naked call",
-  "Is NVDA overbought? Check RSI and MACD",
-  "What is IV crush and how do I avoid it?",
-  "Show me a bullish options strategy for a low-IV environment",
-];
-
 function formatRelative(iso: string): string {
   const d = new Date(iso + "Z");
   const now = Date.now();
@@ -294,20 +285,9 @@ export default function ChatPage() {
               <div>
                 <h2 className="text-lg font-semibold text-white mb-1">Nexus AI Trading Assistant</h2>
                 <p className="text-sm text-gray-500 max-w-md">
-                  Ask about stocks, options strategies, technical analysis, Greeks, IV, patterns, or anything market-related.
-                  Every conversation is saved automatically.
+                  Start talking or type naturally. Nexus keeps context, fetches market data when a ticker appears,
+                  and answers with a clear thesis, risks, and next questions.
                 </p>
-              </div>
-              <div className="grid grid-cols-2 gap-2 max-w-xl w-full">
-                {STARTERS.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => send(s)}
-                    className="text-left text-xs text-gray-400 bg-[#111827] border border-[#1f2937] hover:border-blue-600/40 hover:text-gray-200 rounded-lg px-3 py-2.5 transition-all"
-                  >
-                    {s}
-                  </button>
-                ))}
               </div>
             </div>
           )}
@@ -379,6 +359,7 @@ export default function ChatPage() {
         <div className="px-5 pb-4 pt-2">
           <div className="flex items-end gap-2 bg-[#111827] border border-[#1f2937] focus-within:border-blue-600/50 rounded-xl px-4 py-3 transition-colors">
             <textarea
+              autoFocus
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKey}

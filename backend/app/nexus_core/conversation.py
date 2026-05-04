@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 _INTENT_PATTERNS: Dict[str, List[str]] = {
     "options_analysis": [
-        r"\b(call|put|option|strike|expir|iv|implied vol|delta|theta|gamma|vega|greeks?)\b",
+        r"\b(calls?|puts?|options?|strike|expir|iv|implied vol|delta|theta|gamma|vega|greeks?)\b",
         r"\b(itm|otm|atm|in.the.money|out.of.the.money)\b",
         r"\b(covered call|cash.secured put|iron condor|straddle|strangle|spread)\b",
     ],
@@ -62,6 +62,9 @@ _COMMON_WORDS = {
     "RSI", "EMA", "SMA", "ATM", "OTM", "ITM", "PE", "EPS", "YTD", "ETF",
     "AI", "ML", "API", "CEO", "CFO", "IPO", "SEC", "FED", "GDP", "CPI",
     "PUT", "CALL", "BUY", "SELL", "HOLD", "LONG", "SHORT",
+    "PUTS", "CALLS", "OPTIONS", "TALK", "CHAT", "ASK", "SHOW", "CHECK",
+    "LOOK", "TELL", "HELP", "CAN", "YOU", "WHAT", "WHEN", "WHY", "HOW",
+    "NOW", "NEXT", "BEST", "TRADE", "SETUP", "RISK",
 }
 
 # Well-known tickers to boost confidence
@@ -114,8 +117,11 @@ Your capabilities:
 - Risk management: position sizing, stop-loss placement, risk/reward ratios
 
 Communication style:
+- Converse naturally, like a sharp trading partner sitting beside the user.
 - Be precise and data-driven. Cite specific numbers when available.
-- Structure complex analysis with clear sections.
+- Keep momentum: answer the question, explain the tradeoff, then offer the next useful angle.
+- Ask one concise follow-up when the user's goal is ambiguous.
+- Structure complex analysis with clear sections, but avoid sounding like a static report.
 - Always distinguish between high-confidence signals and speculative observations.
 - Use markdown formatting for readability (headers, bullet points, tables).
 
@@ -215,11 +221,67 @@ class NexusConversationEngine:
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
-    def _fallback_response(self, user_message: str) -> str:
+    def _fallback_response(
+        self,
+        user_message: str,
+        market_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Return a structured fallback when no API key is configured."""
         symbols = extract_symbols(user_message)
         intent = classify_intent(user_message)
         symbol_str = symbols[0] if symbols else "the requested symbol"
+
+        if market_context and market_context.get("price"):
+            symbol = market_context.get("symbol", symbol_str)
+            price = market_context.get("price")
+            change_pct = market_context.get("change_pct")
+            source = market_context.get("source", "market data")
+            technicals = market_context.get("technicals", {}) or {}
+            rsi = technicals.get("rsi")
+            macd = technicals.get("macd")
+            macd_signal = technicals.get("macd_signal")
+            sma50 = technicals.get("sma_50")
+            sma200 = technicals.get("sma_200")
+
+            tone = "balanced"
+            if price and sma50 and sma200 and price > sma50 > sma200:
+                tone = "constructively bullish"
+            elif price and sma50 and sma200 and price < sma50 < sma200:
+                tone = "defensively bearish"
+
+            rsi_line = f" RSI is {rsi:.1f}," if rsi is not None else ""
+            macd_line = ""
+            if macd is not None and macd_signal is not None:
+                macd_line = " MACD is above signal," if macd > macd_signal else " MACD is below signal,"
+
+            option_angle = ""
+            if intent == "options_analysis":
+                if tone == "constructively bullish":
+                    option_angle = (
+                        "\n\nFor calls, I would prefer confirmation over chasing: look for price to hold above the nearest "
+                        "support zone, then compare 30-60 DTE contracts with manageable spreads and delta near your risk tolerance."
+                    )
+                elif tone == "defensively bearish":
+                    option_angle = (
+                        "\n\nFor puts, I would avoid forcing the trade unless momentum confirms downside continuation. "
+                        "Use defined risk and watch IV, because premium can move against you even when direction is right."
+                    )
+                else:
+                    option_angle = (
+                        "\n\nFor options, this reads more like a wait-for-confirmation setup than a clean directional entry. "
+                        "A spread can make more sense than a naked long option when confidence is moderate."
+                    )
+
+            return (
+                f"I have **{symbol}** from {source}: last price **${price:.2f}**"
+                f"{f', {change_pct:+.2f}% on the day' if change_pct is not None else ''}. "
+                f"My local read is **{tone}**.{rsi_line}{macd_line} and the moving-average context is "
+                f"{'available' if sma50 and sma200 else 'limited'}."
+                f"{option_angle}\n\n"
+                "The full conversational model is not enabled yet because `NEXUS_API_KEY` or `GROQ_API_KEY` is missing, "
+                "but the live data path is working and Nexus can still reason from local indicators.\n\n"
+                "> ⚠️ **Disclaimer**: This analysis is for informational purposes only and does not constitute financial advice. Options trading involves substantial risk of loss."
+            )
 
         if intent == "options_analysis":
             return (
@@ -261,14 +323,17 @@ class NexusConversationEngine:
         messages = await self._build_messages(user_message, memory, market_context)
 
         try:
-            response = await self._call_llm(messages)
+            if not settings.nexus_api_key and not settings.groq_api_key:
+                response = self._fallback_response(user_message, market_context)
+            else:
+                response = await self._call_llm(messages)
         except Exception as exc:
             log.warning("nexus_trader.llm_primary_failed", error=str(exc))
             try:
                 response = await self._call_llm(messages, use_groq=True)
             except Exception as exc2:
                 log.error("nexus_trader.llm_all_failed", error=str(exc2))
-                response = self._fallback_response(user_message)
+                response = self._fallback_response(user_message, market_context)
 
         # Persist both turns to SQLite
         await memory.add_turn("user", user_message, metadata={"intent": intent, "symbols": symbols})
@@ -277,7 +342,7 @@ class NexusConversationEngine:
         metadata = {
             "intent": intent,
             "symbols": symbols,
-            "active_symbol": memory.get_active_symbol(),
+            "active_symbol": await memory.get_active_symbol(),
         }
         return response, metadata
 

@@ -1,6 +1,7 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL
-  ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1`
-  : "/api/v1";
+// Keep browser requests same-origin so Next.js can proxy them to FastAPI.
+// Calling a localhost backend directly from the browser breaks in Codespaces,
+// forwarded ports, and any origin that FastAPI CORS has not explicitly allowed.
+const BASE = "/api/v1";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -94,6 +95,59 @@ export interface FullAnalysis {
     risks: string[];
     disclaimer: string;
   };
+  adaptive_prediction?: AdaptivePredictionResponse;
+}
+
+export interface AdaptivePredictionResponse {
+  symbol: string;
+  prediction: {
+    direction: "call" | "put" | "neutral";
+    option_type?: "call" | "put" | null;
+    confidence: number;
+    horizon_days: number;
+    entry_price: number;
+    target_price?: number | null;
+    stop_loss?: number | null;
+    raw_scores: { bullish: number; bearish: number };
+    rationale: string[];
+    risks: string[];
+    learning_adjustment: { factor: number; reason: string };
+  };
+  review: {
+    completed: number;
+    pending: number;
+    wins: number;
+    losses: number;
+    win_rate?: number | null;
+    by_direction: Record<string, {
+      total: number;
+      wins: number;
+      losses: number;
+      win_rate?: number | null;
+      learning_factor: number;
+    }>;
+    recent_mistakes: Array<{
+      created_at: string;
+      direction: string;
+      confidence: number;
+      entry_price: number;
+      exit_price?: number | null;
+      pnl_pct?: number | null;
+      notes: string[];
+    }>;
+    recent_predictions: Array<{
+      created_at: string;
+      direction: string;
+      confidence: number;
+      entry_price: number;
+      target_price?: number | null;
+      stop_loss?: number | null;
+      outcome_status: string;
+      exit_price?: number | null;
+      pnl_pct?: number | null;
+    }>;
+  };
+  disclaimer: string;
 }
 
 export interface ChatResponse {
@@ -164,6 +218,16 @@ export interface WatchlistResponse {
   quotes: Quote[];
 }
 
+export interface MarketProvidersResponse {
+  providers: Array<{
+    name: string;
+    configured: boolean;
+    capabilities: string[];
+    note?: string;
+  }>;
+  active_fallback_order: string[];
+}
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -195,12 +259,15 @@ export const api = {
     req(`/chat/sessions/${sessionId}`, { method: "DELETE" }),
 
   // Market
+  providers: () => req<MarketProvidersResponse>("/market/providers"),
+
   quote: (symbol: string) => req<Quote>(`/market/quote/${symbol}`),
 
   history: (symbol: string, years = 5, timespan = "day") =>
     req<{ symbol: string; bars: OHLCVBar[] }>(`/market/history/${symbol}?years=${years}&timespan=${timespan}`),
 
-  analysis: (symbol: string) => req<FullAnalysis>(`/market/analysis/${symbol}`),
+  analysis: (symbol: string, sessionId = "console") =>
+    req<FullAnalysis>(`/market/analysis/${symbol}?session_id=${encodeURIComponent(sessionId)}`),
 
   patterns: (symbol: string, years = 2) =>
     req<PatternAnalysis>(`/market/patterns/${symbol}?years=${years}`),

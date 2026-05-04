@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { NexusConversationDock } from "@/components/NexusConversationDock";
 
 export const metadata: Metadata = {
   title: "Nexus Trader — AI Market Research",
@@ -13,6 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="flex h-screen overflow-hidden bg-[#0a0e1a] text-gray-100">
         <Sidebar />
         <main className="flex-1 overflow-auto">{children}</main>
+        <NexusConversationDock />
       </body>
     </html>
   );

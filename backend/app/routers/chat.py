@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.nexus_core.conversation import conversation_engine
+from app.nexus_core.conversation import extract_symbols
 from app.nexus_core.memory_store import (
     get_memory_store,
     list_sessions,
@@ -50,8 +51,10 @@ async def chat(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
     memory = get_memory_store(session_id)
 
-    # Resolve symbol: explicit param > extracted from message > persisted active symbol
-    symbol = req.symbol or await memory.get_active_symbol()
+    # Resolve symbol before context fetch so natural messages like
+    # "Talk me through NVDA calls" get live market data on the first turn.
+    extracted_symbols = extract_symbols(req.message)
+    symbol = req.symbol or (extracted_symbols[0] if extracted_symbols else None) or await memory.get_active_symbol()
 
     # Fetch live market context
     market_ctx: Optional[Dict[str, Any]] = None

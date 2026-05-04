@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Search, RefreshCw, TrendingUp, TrendingDown, Minus,
   AlertTriangle, ChevronDown, ChevronUp, Zap, BarChart2,
+  BrainCircuit, Target, History,
 } from "lucide-react";
 import { api, type FullAnalysis } from "@/lib/api";
 import { PriceChart } from "@/components/charts/PriceChart";
@@ -19,6 +20,16 @@ export default function ConsolePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAllPatterns, setShowAllPatterns] = useState(false);
+  const [providerSummary, setProviderSummary] = useState<string>("Checking data sources...");
+
+  useEffect(() => {
+    api.providers()
+      .then((res) => {
+        const active = res.providers.filter((p) => p.configured).map((p) => p.name).join(" -> ");
+        setProviderSummary(active || "No market providers configured");
+      })
+      .catch(() => setProviderSummary("Provider status unavailable"));
+  }, []);
 
   const load = useCallback(async (sym: string) => {
     const s = sym.trim().toUpperCase();
@@ -41,6 +52,7 @@ export default function ConsolePage() {
   const tech = data?.technicals;
   const patterns = data?.patterns;
   const reasoning = data?.reasoning;
+  const adaptive = data?.adaptive_prediction;
   const bars = data?.chart_bars || [];
 
   const changePct = quote?.change_pct ?? 0;
@@ -131,7 +143,7 @@ export default function ConsolePage() {
             <div>
               <div className="text-2xl font-bold text-white font-mono">{symbol}</div>
               <div className="text-xs text-gray-500 mt-0.5">
-                {quote?.source === "polygon" ? "Polygon.io" : quote?.source === "alpha_vantage" ? "Alpha Vantage" : "Market Data"}
+                {quote?.source === "polygon" ? "Polygon.io" : quote?.source === "alpha_vantage" ? "Alpha Vantage" : quote?.source === "yahoo_finance" ? "Yahoo Finance delayed" : "Market Data"}
               </div>
             </div>
             <div className="text-3xl font-bold font-mono text-white">{fmtPrice(quote?.price)}</div>
@@ -154,6 +166,146 @@ export default function ConsolePage() {
               </div>
             ))}
           </div>
+
+          <div className="flex items-start gap-2 bg-[#111827] border border-[#1f2937] rounded-xl px-4 py-3 text-xs text-gray-500">
+            <Zap size={13} className="mt-0.5 flex-shrink-0 text-blue-400" />
+            <span>Data sources: {providerSummary}. Options chains still require a configured Polygon or Tradier integration.</span>
+          </div>
+
+          {adaptive && (
+            <div className="grid grid-cols-3 gap-5">
+              <div className="col-span-2 bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                    <BrainCircuit size={15} className="text-cyan-400" />
+                    Adaptive Options Thesis
+                  </div>
+                  <span className="text-[10px] uppercase tracking-wide text-gray-500">
+                    {adaptive.prediction.horizon_days} day review window
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-3">
+                  <div className={cn(
+                    "rounded-lg border p-3",
+                    adaptive.prediction.direction === "call"
+                      ? "bg-green-900/15 border-green-800/40"
+                      : adaptive.prediction.direction === "put"
+                        ? "bg-red-900/15 border-red-800/40"
+                        : "bg-gray-800/60 border-gray-700"
+                  )}>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wide">Prediction</div>
+                    <div className={cn("mt-1 text-xl font-bold uppercase", directionColor(
+                      adaptive.prediction.direction === "call" ? "bullish" : adaptive.prediction.direction === "put" ? "bearish" : "neutral"
+                    ))}>
+                      {adaptive.prediction.direction}
+                    </div>
+                  </div>
+                  <div className="bg-[#1f2937] rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wide">Confidence</div>
+                    <div className={cn("mt-1 text-xl font-bold font-mono", confidenceColor(adaptive.prediction.confidence))}>
+                      {(adaptive.prediction.confidence * 100).toFixed(0)}%
+                    </div>
+                  </div>
+                  <div className="bg-[#1f2937] rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wide">Target</div>
+                    <div className="mt-1 text-xl font-bold font-mono text-gray-100">
+                      {fmtPrice(adaptive.prediction.target_price)}
+                    </div>
+                  </div>
+                  <div className="bg-[#1f2937] rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wide">Stop</div>
+                    <div className="mt-1 text-xl font-bold font-mono text-gray-100">
+                      {fmtPrice(adaptive.prediction.stop_loss)}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-4">
+                  <div>
+                    <div className="flex items-center gap-2 text-xs font-semibold text-gray-300 mb-2">
+                      <Target size={12} className="text-blue-400" />
+                      Current Evidence
+                    </div>
+                    <div className="space-y-1.5">
+                      {adaptive.prediction.rationale.slice(0, 4).map((item, i) => (
+                        <div key={i} className="flex gap-2 text-xs text-gray-400">
+                          <span className="text-cyan-500 mt-0.5">›</span>
+                          <span>{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-gray-300 mb-2">Learning Adjustment</div>
+                    <div className="text-xs text-gray-400 leading-relaxed">
+                      {adaptive.prediction.learning_adjustment.reason}
+                    </div>
+                    <div className="mt-2 flex gap-3 text-[11px] text-gray-500">
+                      <span>Bull: {adaptive.prediction.raw_scores.bullish.toFixed(1)}</span>
+                      <span>Bear: {adaptive.prediction.raw_scores.bearish.toFixed(1)}</span>
+                      <span>Factor: {adaptive.prediction.learning_adjustment.factor.toFixed(2)}x</span>
+                    </div>
+                  </div>
+                </div>
+                {adaptive.prediction.risks.length > 0 && (
+                  <div className="mt-3 border-t border-[#1f2937] pt-3 space-y-1">
+                    {adaptive.prediction.risks.map((risk, i) => (
+                      <div key={i} className="flex gap-2 text-xs text-yellow-600">
+                        <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" />
+                        <span>{risk}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-white mb-3">
+                  <History size={14} className="text-blue-400" />
+                  Past Analysis
+                </div>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <div className="bg-[#1f2937] rounded-lg p-2 text-center">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wide">Win Rate</div>
+                    <div className={cn("text-lg font-bold font-mono", (adaptive.review.win_rate ?? 0) >= 50 ? "text-green-400" : "text-red-400")}>
+                      {adaptive.review.win_rate == null ? "—" : `${adaptive.review.win_rate}%`}
+                    </div>
+                  </div>
+                  <div className="bg-[#1f2937] rounded-lg p-2 text-center">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wide">Journal</div>
+                    <div className="text-lg font-bold font-mono text-gray-200">
+                      {adaptive.review.completed}/{adaptive.review.pending}
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {adaptive.review.recent_predictions.slice(0, 4).map((p, i) => (
+                    <div key={i} className="flex items-center justify-between border border-[#1f2937] rounded-lg px-2.5 py-2 text-xs">
+                      <div>
+                        <div className={cn("font-semibold uppercase", directionColor(p.direction === "call" ? "bullish" : p.direction === "put" ? "bearish" : "neutral"))}>
+                          {p.direction}
+                        </div>
+                        <div className="text-gray-600">{new Date(p.created_at).toLocaleDateString()}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className={cn("font-mono", p.outcome_status === "win" ? "text-green-400" : p.outcome_status === "loss" ? "text-red-400" : "text-gray-400")}>
+                          {p.outcome_status}
+                        </div>
+                        <div className="text-gray-600">{p.pnl_pct == null ? `${(p.confidence * 100).toFixed(0)}% conf` : `${p.pnl_pct.toFixed(1)}%`}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {adaptive.review.recent_predictions.length === 0 && (
+                    <p className="text-xs text-gray-600">No completed prediction history yet. Nexus will score predictions after their review window closes.</p>
+                  )}
+                </div>
+                {adaptive.review.recent_mistakes[0]?.notes?.[0] && (
+                  <div className="mt-3 border-t border-[#1f2937] pt-3 text-xs text-gray-500 leading-relaxed">
+                    Last lesson: {adaptive.review.recent_mistakes[0].notes[0]}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* ── Two-column layout ── */}
           <div className="grid grid-cols-3 gap-5">
