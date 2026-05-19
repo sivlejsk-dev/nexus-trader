@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart2, MessageSquare, TrendingUp, Activity,
-  BookOpen, Star, ChevronRight, Zap,
+  BookOpen, Star, ChevronRight, Zap, FlaskConical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +15,7 @@ const NAV = [
   { href: "/backtest",  label: "Backtest",   icon: TrendingUp,    desc: "Strategy testing" },
   { href: "/watchlist", label: "Watchlist",  icon: Star,          desc: "Track symbols" },
   { href: "/learn",     label: "Learn",      icon: BookOpen,      desc: "Education" },
+  { href: "/test",      label: "API Tests",  icon: FlaskConical,  desc: "Live endpoint tests" },
 ];
 
 export function Sidebar() {
