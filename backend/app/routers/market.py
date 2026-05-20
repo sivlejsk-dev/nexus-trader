@@ -11,6 +11,7 @@ from app.services.adaptive_predictions import adaptive_prediction_service
 from app.services.event_intelligence import event_intelligence_service
 from app.services.historical_simulation import run_simulation, get_events_for_range
 from app.services.model_refinement import model_refinement_service
+from app.services.signal_optimizer import signal_optimizer
 from app.nexus_core.reasoning import reasoning_engine
 from app.core.config import settings
 
@@ -378,13 +379,20 @@ async def unified_analysis(
     if not bars:
         raise HTTPException(status_code=404, detail=f"No historical data for {sym}")
 
-    # Run upgraded simulation with adaptive learning from live outcomes
+    # Load learned weights for this symbol (falls back to defaults if none saved)
+    active_weights = await signal_optimizer.load_weights(sym)
+
+    # Run upgraded simulation with adaptive learning + learned weights
     sim = run_simulation(
         bars, sym,
         horizon_days=horizon_days,
         sample_every=sample_every,
         live_predictions=live_preds,
+        weights=active_weights,
     )
+    sim["using_learned_weights"] = active_weights != __import__(
+        "app.services.historical_simulation", fromlist=["DEFAULT_WEIGHTS"]
+    ).DEFAULT_WEIGHTS
 
     # Build live performance summary
     completed = [p for p in live_preds if p.get("outcome_status") in ("win", "loss", "flat")]
@@ -461,3 +469,97 @@ async def _fetch_live_predictions(symbol: str) -> list:
         return result
     except Exception:
         return []
+
+
+# ── Signal weight optimization ────────────────────────────────────────────────
+
+@router.post("/optimize/{symbol}")
+async def optimize_symbol(
+    symbol: str,
+    years: int = Query(default=5, ge=1, le=20),
+    horizon_days: int = Query(default=20, ge=5, le=60),
+    generations: int = Query(default=40, ge=5, le=100),
+    children: int = Query(default=8, ge=4, le=20),
+    save: bool = Query(default=True, description="Persist best weights after optimization"),
+):
+    """
+    Run the iterative signal weight optimizer for a symbol.
+
+    Replays the simulation N generations, mutating signal weights each time,
+    keeping the best-performing weight set. Returns convergence history,
+    baseline vs optimized comparison, and the top changed signals.
+
+    If save=true, the best weights are persisted and used for all future
+    simulations on this symbol.
+    """
+    sym = symbol.upper()
+
+    bars = await market_data_service.get_historical_ohlcv(sym, years=years)
+    if not bars:
+        raise HTTPException(status_code=404, detail=f"No historical data for {sym}")
+
+    live_preds = await _fetch_live_predictions(sym)
+
+    result = await signal_optimizer.optimize(
+        bars=bars,
+        symbol=sym,
+        horizon_days=horizon_days,
+        sample_every=10,
+        max_generations=generations,
+        children_per_gen=children,
+        live_predictions=live_preds,
+    )
+
+    if save and result["optimized"]["win_rate"] is not None:
+        await signal_optimizer.save_weights(
+            symbol=sym,
+            weights=result["optimized"]["weights"],
+            win_rate=result["optimized"]["win_rate"],
+            avg_pnl=result["optimized"]["avg_pnl_pct"],
+            total_trades=result["optimized"]["total_predictions"] or 0,
+            generation=result["generations_run"],
+            notes=f"Optimized {years}Y {horizon_days}d horizon, {result['generations_run']} generations",
+        )
+        await signal_optimizer.save_run(sym, years, horizon_days, result)
+        result["weights_saved"] = True
+    else:
+        result["weights_saved"] = False
+
+    # Strip full simulation predictions from response to keep payload small
+    if "full_simulation" in result:
+        fs = result["full_simulation"]
+        result["full_simulation"] = {
+            k: v for k, v in fs.items() if k != "predictions"
+        }
+
+    return result
+
+
+@router.get("/optimize/{symbol}/history")
+async def optimization_history(symbol: str, limit: int = Query(default=10, ge=1, le=50)):
+    """Return past optimization runs for a symbol."""
+    return {
+        "symbol": symbol.upper(),
+        "runs": await signal_optimizer.history(symbol.upper(), limit=limit),
+    }
+
+
+@router.get("/optimize/{symbol}/weights")
+async def get_active_weights(symbol: str):
+    """Return the currently active signal weights for a symbol."""
+    from app.services.historical_simulation import DEFAULT_WEIGHTS
+    weights = await signal_optimizer.load_weights(symbol.upper())
+    is_default = weights == DEFAULT_WEIGHTS
+    return {
+        "symbol": symbol.upper(),
+        "weights": weights,
+        "is_default": is_default,
+        "default_weights": DEFAULT_WEIGHTS,
+    }
+
+
+@router.delete("/optimize/{symbol}/weights")
+async def reset_weights(symbol: str):
+    """Reset learned weights back to defaults for a symbol."""
+    await signal_optimizer.reset(symbol.upper())
+    return {"symbol": symbol.upper(), "reset": True}

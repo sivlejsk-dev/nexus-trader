@@ -197,10 +197,37 @@ def _volume_ratio(volumes: List[float], period: int = 20) -> Optional[float]:
     return round(volumes[-1] / avg, 2)
 
 
+# ── Default signal weights (baseline) ────────────────────────────────────────
+# Each key maps to the base contribution weight for that signal.
+# The optimizer mutates these to find the best-performing combination.
+
+DEFAULT_WEIGHTS: Dict[str, float] = {
+    "sma20":          1.00,   # price vs SMA20
+    "sma_cross":      0.80,   # SMA20 vs SMA50 cross
+    "sma200":         0.60,   # price vs SMA200
+    "rsi_extreme":    1.50,   # RSI < 30 or > 70
+    "rsi_mild":       0.90,   # RSI 30-40 or 60-70
+    "macd_cross":     0.90,   # MACD vs signal line
+    "macd_accel":     0.40,   # MACD histogram direction
+    "bb_band":        1.10,   # price near BB upper/lower
+    "volume_confirm": 0.70,   # high volume confirmation
+    "momentum_5bar":  0.60,   # 5-bar price momentum
+    "edge_threshold": 0.60,   # minimum edge to avoid neutral
+}
+
+WeightMap = Dict[str, float]
+
+
 # ── Bar scorer — full signal stack ────────────────────────────────────────────
 
-def _score_bar(bars: List[Dict[str, Any]], i: int) -> Dict[str, Any]:
-    """Score a single bar using the full Nexus signal stack."""
+def _score_bar(
+    bars: List[Dict[str, Any]],
+    i: int,
+    weights: Optional[WeightMap] = None,
+) -> Dict[str, Any]:
+    """Score a single bar using the full Nexus signal stack with injectable weights."""
+    w = {**DEFAULT_WEIGHTS, **(weights or {})}
+
     window_bars = bars[max(0, i - 80): i + 1]
     closes = [b["close"] for b in window_bars]
     volumes = [b.get("volume", 0) for b in window_bars]
@@ -220,99 +247,97 @@ def _score_bar(bars: List[Dict[str, Any]], i: int) -> Dict[str, Any]:
 
     if sma20:
         if price > sma20:
-            bullish += 1.0
+            bullish += w["sma20"]
             rationale.append("Price above SMA20")
         else:
-            bearish += 1.0
+            bearish += w["sma20"]
             rationale.append("Price below SMA20")
 
     if sma50 and sma20:
         if sma20 > sma50:
-            bullish += 0.8
+            bullish += w["sma_cross"]
             rationale.append("SMA20 > SMA50 (golden alignment)")
         else:
-            bearish += 0.8
+            bearish += w["sma_cross"]
             rationale.append("SMA20 < SMA50 (death cross)")
 
     if sma200 and sma50:
         if price > sma200:
-            bullish += 0.6
+            bullish += w["sma200"]
         else:
-            bearish += 0.6
+            bearish += w["sma200"]
 
     # ── RSI ──
     rsi = _rsi(closes)
     if rsi is not None:
         if rsi < 30:
-            bullish += 1.5
+            bullish += w["rsi_extreme"]
             rationale.append(f"RSI {rsi} deeply oversold")
         elif rsi < 40:
-            bullish += 0.9
+            bullish += w["rsi_mild"]
             rationale.append(f"RSI {rsi} oversold")
         elif rsi > 70:
-            bearish += 1.5
+            bearish += w["rsi_extreme"]
             rationale.append(f"RSI {rsi} deeply overbought")
         elif rsi > 60:
-            bearish += 0.9
+            bearish += w["rsi_mild"]
             rationale.append(f"RSI {rsi} overbought")
 
     # ── MACD ──
     macd_line, macd_signal, macd_hist = _macd(closes)
     if macd_line is not None and macd_signal is not None:
         if macd_line > macd_signal:
-            bullish += 0.9
+            bullish += w["macd_cross"]
             rationale.append("MACD above signal (bullish momentum)")
         else:
-            bearish += 0.9
+            bearish += w["macd_cross"]
             rationale.append("MACD below signal (bearish momentum)")
-        # Histogram direction (momentum acceleration)
         if macd_hist is not None and len(closes) > 36:
             prev_macd, prev_sig, prev_hist = _macd(closes[:-1])
             if prev_hist is not None:
                 if macd_hist > prev_hist:
-                    bullish += 0.4
+                    bullish += w["macd_accel"]
                 else:
-                    bearish += 0.4
+                    bearish += w["macd_accel"]
 
     # ── Bollinger Bands ──
     bb = _bollinger(closes)
     if bb["pct_b"] is not None:
         pct_b = bb["pct_b"]
         if pct_b < 0.1:
-            bullish += 1.1
+            bullish += w["bb_band"]
             rationale.append("Price near lower Bollinger Band (oversold)")
         elif pct_b > 0.9:
-            bearish += 1.1
+            bearish += w["bb_band"]
             rationale.append("Price near upper Bollinger Band (overbought)")
-        # Squeeze: narrow bands = breakout pending
         if bb["width_pct"] is not None and bb["width_pct"] < 4.0:
             rationale.append("Bollinger squeeze — breakout likely")
 
     # ── Volume confirmation ──
     vol_ratio = _volume_ratio(volumes)
     if vol_ratio is not None and vol_ratio > 1.5:
-        # High volume confirms the current direction
         if bullish > bearish:
-            bullish += 0.7
+            bullish += w["volume_confirm"]
             rationale.append(f"Volume {vol_ratio}x avg confirms bullish move")
         else:
-            bearish += 0.7
+            bearish += w["volume_confirm"]
             rationale.append(f"Volume {vol_ratio}x avg confirms bearish move")
 
     # ── Short-term momentum (5-bar) ──
     if len(closes) >= 6:
         mom = (closes[-1] - closes[-6]) / closes[-6] * 100
         if mom > 3:
-            bullish += 0.6
+            bullish += w["momentum_5bar"]
         elif mom < -3:
-            bearish += 0.6
+            bearish += w["momentum_5bar"]
 
     # ── ATR-based volatility context ──
     atr = _atr(window_bars)
 
     edge = bullish - bearish
     total = max(bullish + bearish, 1.0)
-    if abs(edge) < 0.6:
+    edge_thresh = max(0.1, w.get("edge_threshold", 0.60))
+    if abs(edge) < edge_thresh:
         direction = "neutral"
         confidence = 0.42
     elif edge > 0:
@@ -371,24 +396,25 @@ def run_simulation(
     horizon_days: int = 20,
     sample_every: int = 10,
     live_predictions: Optional[List[Dict[str, Any]]] = None,
+    weights: Optional[WeightMap] = None,
 ) -> Dict[str, Any]:
     """
     Replay Nexus prediction logic across historical bars.
 
-    live_predictions: completed live predictions for this symbol — used to
-    apply adaptive learning factors to simulated confidence scores.
+    weights: signal weight map — if None, uses DEFAULT_WEIGHTS.
+    live_predictions: completed live predictions used for adaptive learning factors.
     """
     if not bars:
         return {"predictions": [], "accuracy": {}, "events": []}
 
     learning_factors = _build_learning_factors(live_predictions or [])
-    closes = [b["close"] for b in bars]
+    effective_weights = {**DEFAULT_WEIGHTS, **(weights or {})}
     predictions = []
 
     indices = list(range(80, len(bars) - horizon_days, sample_every))
 
     for i in indices:
-        score = _score_bar(bars, i)
+        score = _score_bar(bars, i, weights=effective_weights)
         entry_bar = bars[i]
         entry_price = entry_bar["close"]
 
@@ -469,6 +495,7 @@ def run_simulation(
         "by_direction": by_dir,
         "signal_stats": signal_stats,
         "learning_factors": learning_factors,
+        "weights_used": effective_weights,
         "predictions": predictions,
         "events": events,
         "horizon_days": horizon_days,

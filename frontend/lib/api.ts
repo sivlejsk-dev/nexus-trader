@@ -315,6 +315,8 @@ export interface SimulationResult {
   }>;
   signal_stats?: Record<string, SignalStat>;
   learning_factors?: Record<string, number>;
+  weights_used?: Record<string, number>;
+  using_learned_weights?: boolean;
   predictions: SimulationPrediction[];
   events: WorldEvent[];
   horizon_days: number;
@@ -325,6 +327,34 @@ export interface UnifiedAnalysisResponse {
   symbol: string;
   simulation: SimulationResult;
   live_predictions: PredictionHistoryResponse;
+}
+
+export interface WeightChange {
+  baseline: number;
+  optimized: number;
+  delta: number;
+}
+
+export interface OptimizationConvergencePoint {
+  generation: number;
+  win_rate: number | null;
+  avg_pnl: number | null;
+  fitness: number;
+  temperature?: number;
+  improved: boolean;
+}
+
+export interface OptimizationResult {
+  symbol: string;
+  generations_run: number;
+  baseline: { win_rate: number | null; avg_pnl_pct: number | null; total_predictions: number; weights: Record<string, number> };
+  optimized: { win_rate: number | null; avg_pnl_pct: number | null; total_predictions: number; weights: Record<string, number> };
+  improvement_pct: number | null;
+  weight_changes: Record<string, WeightChange>;
+  top_changed_signals: string[];
+  convergence: OptimizationConvergencePoint[];
+  weights_saved: boolean;
+  full_simulation?: Partial<SimulationResult>;
 }
 
 // ── Event Intelligence ────────────────────────────────────────────────────────
@@ -531,4 +561,22 @@ export const api = {
   // Session insights
   sessionInsights: (sessionId: string) =>
     req<{ insights: SessionInsight[]; summary: Record<string, unknown> }>(`/chat/insights/${sessionId}`),
+
+  // Signal weight optimizer
+  optimizeWeights: (symbol: string, years = 5, horizonDays = 20, generations = 40, save = true) =>
+    req<OptimizationResult>(
+      `/market/optimize/${symbol}?years=${years}&horizon_days=${horizonDays}&generations=${generations}&save=${save}`,
+      { method: "POST" }
+    ),
+
+  getActiveWeights: (symbol: string) =>
+    req<{ symbol: string; weights: Record<string, number>; is_default: boolean; default_weights: Record<string, number> }>(
+      `/market/optimize/${symbol}/weights`
+    ),
+
+  resetWeights: (symbol: string) =>
+    req<{ symbol: string; reset: boolean }>(`/market/optimize/${symbol}/weights`, { method: "DELETE" }),
+
+  optimizationHistory: (symbol: string) =>
+    req<{ symbol: string; runs: Array<Record<string, unknown>> }>(`/market/optimize/${symbol}/history`),
 };

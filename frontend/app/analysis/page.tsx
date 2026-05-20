@@ -21,6 +21,7 @@ import {
   type UnifiedAnalysisResponse,
 } from "@/lib/api";
 import { cn, fmtPrice } from "@/lib/utils";
+import { OptimizerPanel } from "@/components/OptimizerPanel";
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
@@ -601,7 +602,7 @@ function NexusInsight({ sim, live }: { sim: SimulationResult; live: PredictionHi
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-type Tab = "simulation" | "live" | "events";
+type Tab = "simulation" | "live" | "events" | "optimize";
 
 function AnalysisPageInner() {
   const searchParams = useSearchParams();
@@ -772,18 +773,33 @@ function AnalysisPageInner() {
               </span>
               <div className="ml-auto flex gap-1 bg-[#1f2937] rounded-lg p-0.5">
                 {([
-                  { id: "simulation", label: "Simulation",  icon: BarChart2 },
-                  { id: "live",       label: "Live",        icon: Target },
-                  { id: "events",     label: "Events",      icon: Globe },
+                  { id: "simulation", label: "Simulation", icon: BarChart2 },
+                  { id: "live",       label: "Live",       icon: Target },
+                  { id: "events",     label: "Events",     icon: Globe },
+                  { id: "optimize",   label: "Optimize",   icon: Zap },
                 ] as { id: Tab; label: string; icon: React.ElementType }[]).map(({ id, label, icon: Icon }) => (
                   <button key={id} onClick={() => setTab(id)}
                     className={cn("text-[10px] px-3 py-1.5 rounded-md font-medium transition-colors flex items-center gap-1.5",
-                      tab === id ? "bg-blue-600 text-white" : "text-gray-500 hover:text-gray-300")}>
+                      tab === id
+                        ? id === "optimize" ? "bg-yellow-600 text-white" : "bg-blue-600 text-white"
+                        : "text-gray-500 hover:text-gray-300")}>
                     <Icon size={10} />{label}
                   </button>
                 ))}
               </div>
             </div>
+
+            {/* Learned weights badge */}
+            {sim.using_learned_weights && (
+              <div className="flex items-center gap-2 bg-yellow-900/10 border border-yellow-800/30 rounded-xl px-4 py-2.5 text-xs text-yellow-400">
+                <Zap size={12} className="flex-shrink-0" />
+                Using learned signal weights for {sim.symbol} — optimizer has tuned this model.
+                <button onClick={() => setTab("optimize")}
+                  className="ml-auto text-yellow-500 hover:text-yellow-300 underline text-[10px]">
+                  View optimizer →
+                </button>
+              </div>
+            )}
 
             {/* Nexus insight — always visible */}
             <NexusInsight sim={sim} live={live} />
@@ -814,12 +830,17 @@ function AnalysisPageInner() {
               </div>
             )}
 
+            {/* ── Optimize tab ── */}
+            {tab === "optimize" && <OptimizerPanel symbol={sim.symbol} />}
+
             {/* Disclaimer */}
-            <div className="flex items-start gap-2 bg-yellow-900/10 border border-yellow-800/20 rounded-xl p-3 text-xs text-yellow-700">
-              <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
-              Simulated results use simplified technical signals and do not account for slippage, commissions, or real
-              options pricing. Past simulated accuracy does not predict future results.
-            </div>
+            {tab !== "optimize" && (
+              <div className="flex items-start gap-2 bg-yellow-900/10 border border-yellow-800/20 rounded-xl p-3 text-xs text-yellow-700">
+                <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
+                Simulated results use simplified technical signals and do not account for slippage, commissions, or real
+                options pricing. Past simulated accuracy does not predict future results.
+              </div>
+            )}
           </>
         )}
       </div>

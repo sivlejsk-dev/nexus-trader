@@ -164,6 +164,37 @@ CREATE TABLE IF NOT EXISTS session_insights (
 CREATE INDEX IF NOT EXISTS idx_insights_session ON session_insights(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_insights_symbol ON session_insights(symbol, insight_type);
 
+-- Learned signal weights per symbol — updated by the iterative optimizer
+CREATE TABLE IF NOT EXISTS signal_weights (
+    id           TEXT PRIMARY KEY,
+    symbol       TEXT NOT NULL,
+    weights      TEXT NOT NULL,   -- JSON: {signal_key: float}
+    generation   INTEGER NOT NULL DEFAULT 0,
+    win_rate     REAL,
+    avg_pnl_pct  REAL,
+    total_trades INTEGER,
+    is_active    INTEGER NOT NULL DEFAULT 1,  -- 1 = currently used for this symbol
+    created_at   TEXT NOT NULL,
+    notes        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_signal_weights_symbol ON signal_weights(symbol, is_active);
+
+-- Optimization run history — one row per full optimizer run
+CREATE TABLE IF NOT EXISTS optimization_runs (
+    id              TEXT PRIMARY KEY,
+    symbol          TEXT NOT NULL,
+    years           INTEGER NOT NULL,
+    horizon_days    INTEGER NOT NULL,
+    generations     INTEGER NOT NULL,
+    best_win_rate   REAL,
+    baseline_win_rate REAL,
+    improvement_pct REAL,
+    convergence     TEXT NOT NULL,  -- JSON array of {generation, win_rate, weights}
+    best_weights    TEXT NOT NULL,  -- JSON
+    completed_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opt_runs_symbol ON optimization_runs(symbol, completed_at);
+
 -- App control log: every command Nexus issued + whether user confirmed
 CREATE TABLE IF NOT EXISTS app_commands (
     id              TEXT PRIMARY KEY,
