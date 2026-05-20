@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Search, RefreshCw, TrendingUp, TrendingDown, Minus,
   AlertTriangle, ChevronDown, ChevronUp, Zap, BarChart2,
@@ -13,7 +14,8 @@ import { cn, fmtPrice, fmtPct, fmtVolume, changeColor, confidenceColor, directio
 
 const QUICK_SYMBOLS = ["AAPL", "TSLA", "NVDA", "SPY", "QQQ", "MSFT", "AMZN", "META"];
 
-export default function ConsolePage() {
+function ConsolePageInner() {
+  const searchParams = useSearchParams();
   const [symbol, setSymbol] = useState("AAPL");
   const [input, setInput] = useState("AAPL");
   const [data, setData] = useState<FullAnalysis | null>(null);
@@ -47,6 +49,13 @@ export default function ConsolePage() {
       setLoading(false);
     }
   }, []);
+
+  // Auto-load when Nexus navigates here with ?symbol=AAPL
+  useEffect(() => {
+    const sym = searchParams.get("symbol");
+    if (sym) load(sym);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const quote = data?.quote;
   const tech = data?.technicals;
@@ -430,5 +439,17 @@ export default function ConsolePage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function ConsolePage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-full bg-[#0a0e1a]">
+        <div className="text-gray-500 text-sm">Loading…</div>
+      </div>
+    }>
+      <ConsolePageInner />
+    </Suspense>
   );
 }

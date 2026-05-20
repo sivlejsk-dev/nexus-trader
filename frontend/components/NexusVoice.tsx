@@ -1,14 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Bot, Mic, MicOff, Volume2, VolumeX, X, Minimize2, Maximize2,
   GripHorizontal, MessageCircle, Send, Loader2, User, BarChart2,
+  CheckCircle, XCircle, History, Zap, BookOpen, AlertTriangle,
+  ChevronDown, ChevronUp, BrainCircuit, Activity,
 } from "lucide-react";
-import { api, type ChatResponse, type SimulationResult } from "@/lib/api";
+import {
+  api,
+  type ChatResponse,
+  type SimulationResult,
+  type AppCommand,
+  type PendingConfirmation,
+  type SessionInsight,
+} from "@/lib/api";
 import { cn, getSessionId } from "@/lib/utils";
 
-// ── Speech types ──────────────────────────────────────────────────────────────
+// ── Speech API types ──────────────────────────────────────────────────────────
 interface SREvent extends Event {
   results: SpeechRecognitionResultList;
   resultIndex: number;
@@ -19,435 +29,604 @@ interface SR extends EventTarget {
   onstart: (() => void) | null; onend: (() => void) | null;
   onerror: ((e: SRErrorEvent) => void) | null;
   onresult: ((e: SREvent) => void) | null;
-  start(): void; stop(): void;
+  start(): void; stop(): void; abort(): void;
 }
-declare global {
-  interface Window {
-    SpeechRecognition?: new () => SR;
-    webkitSpeechRecognition?: new () => SR;
-  }
+declare const webkitSpeechRecognition: new () => SR;
+declare const SpeechRecognition: new () => SR;
+
+// ── Message type ──────────────────────────────────────────────────────────────
+interface Msg {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: Date;
+  simulation?: SimulationResult;
+  app_commands?: AppCommand[];
+  pending_confirmations?: PendingConfirmation[];
+  voice_reasoning?: string;
+  new_insights?: SessionInsight[];
+  intent?: string;
 }
 
-// ── TTS ───────────────────────────────────────────────────────────────────────
+// ── TTS helper ────────────────────────────────────────────────────────────────
 function ttsSpeak(text: string, muted: boolean) {
   if (muted || typeof window === "undefined" || !window.speechSynthesis) return;
   window.speechSynthesis.cancel();
   const clean = text
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/#{1,6} /g, "")
-    .replace(/[*_`>[\]()]/g, "")
-    .replace(/⚠️[^\n]*/g, "")
+    .replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "")
+    .replace(/[*_`#>]/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
   if (!clean) return;
-  const u = new SpeechSynthesisUtterance(clean);
-  u.rate = 1.0; u.pitch = 0.95; u.volume = 1.0;
-  window.speechSynthesis.speak(u);
+  const utt = new SpeechSynthesisUtterance(clean);
+  utt.rate = 1.05; utt.pitch = 1.0; utt.volume = 1.0;
+  window.speechSynthesis.speak(utt);
 }
 
-// ── Inline simulation card ────────────────────────────────────────────────────
+// ── SimCard ───────────────────────────────────────────────────────────────────
 function SimCard({ sim }: { sim: SimulationResult }) {
-  const wr = sim.win_rate;
-  const dr = sim.date_range || {};
+  const wr = sim.win_rate ?? 0;
   return (
-    <div className="mt-2 bg-[#0a0e1a] border border-[#1f2937] rounded-xl p-3 space-y-2">
+    <div className="mt-2 bg-[#0d1117] border border-[#1f2937] rounded-lg p-3 text-xs space-y-1.5">
       <div className="flex items-center gap-2">
         <BarChart2 size={11} className="text-blue-400" />
-        <span className="text-xs font-semibold text-gray-200">{sim.symbol}</span>
-        <span className="text-[10px] text-gray-600 ml-auto">{dr.start?.slice(0,4)}–{dr.end?.slice(0,4)}</span>
+        <span className="font-semibold text-gray-300">{sim.symbol} Simulation</span>
+        <span className={cn("ml-auto font-mono font-bold", wr >= 55 ? "text-green-400" : "text-red-400")}>{wr}%</span>
       </div>
-      <div className="grid grid-cols-3 gap-2 text-center">
-        {[
-          { l: "Win Rate", v: wr != null ? `${wr}%` : "—",   c: (wr ?? 0) >= 55 ? "text-green-400" : "text-red-400" },
-          { l: "Trades",   v: String(sim.total_predictions),  c: "text-white" },
-          { l: "Avg P&L",  v: sim.avg_pnl_pct != null ? `${sim.avg_pnl_pct > 0 ? "+" : ""}${sim.avg_pnl_pct}%` : "—",
-            c: (sim.avg_pnl_pct ?? 0) >= 0 ? "text-green-400" : "text-red-400" },
-        ].map(({ l, v, c }) => (
-          <div key={l} className="bg-[#111827] rounded-lg p-2">
-            <div className={cn("text-sm font-bold font-mono", c)}>{v}</div>
-            <div className="text-[10px] text-gray-600">{l}</div>
-          </div>
-        ))}
+      <div className="flex gap-3 text-gray-500">
+        <span>{sim.total_predictions} trades</span>
+        <span>{sim.date_range.start?.slice(0,4)}–{sim.date_range.end?.slice(0,4)}</span>
+        {sim.avg_pnl_pct != null && (
+          <span className={sim.avg_pnl_pct >= 0 ? "text-green-400" : "text-red-400"}>
+            avg {sim.avg_pnl_pct >= 0 ? "+" : ""}{sim.avg_pnl_pct}%
+          </span>
+        )}
       </div>
-      {sim.events && sim.events.length > 0 && (
-        <p className="text-[10px] text-gray-600">
-          {sim.events.length} world events · {sim.events.slice(0,2).map(e => e.title).join(", ")}
-          {sim.events.length > 2 ? ` +${sim.events.length - 2} more` : ""}
-        </p>
-      )}
-      <a href="/analysis" className="block text-center text-[10px] text-blue-400 hover:text-blue-300 transition-colors">
+      <a href="/analysis" className="text-blue-400 hover:text-blue-300 text-[10px]">
         Open full analysis →
       </a>
     </div>
   );
 }
 
-// ── Message type ──────────────────────────────────────────────────────────────
-interface Msg {
-  role: "user" | "assistant";
-  content: string;
-  ts: number;
-  simulation?: SimulationResult;
-  symbols?: string[];
-  isError?: boolean;
+// ── ConfirmationCard ──────────────────────────────────────────────────────────
+function ConfirmationCard({
+  cmd, onConfirm, onReject,
+}: {
+  cmd: PendingConfirmation;
+  onConfirm: (id: string) => void;
+  onReject: (id: string) => void;
+}) {
+  const label = {
+    trade_buy: "Buy order",
+    trade_sell: "Sell order",
+    trade_options: "Options trade",
+    clear_watchlist: "Clear watchlist",
+    delete_session: "Delete session",
+  }[cmd.type] ?? cmd.type;
+
+  return (
+    <div className="mt-2 bg-yellow-900/20 border border-yellow-800/40 rounded-lg p-3 text-xs space-y-2">
+      <div className="flex items-center gap-2 text-yellow-400">
+        <AlertTriangle size={11} />
+        <span className="font-semibold">Confirmation required: {label}</span>
+      </div>
+      {cmd.symbol && <div className="text-gray-400">Symbol: <span className="font-mono text-white">{cmd.symbol}</span></div>}
+      <div className="flex gap-2">
+        <button onClick={() => onConfirm(cmd.id)}
+          className="flex items-center gap-1 bg-green-700 hover:bg-green-600 text-white px-3 py-1 rounded text-[10px] font-semibold transition-colors">
+          <CheckCircle size={10} /> Confirm
+        </button>
+        <button onClick={() => onReject(cmd.id)}
+          className="flex items-center gap-1 bg-red-900/40 hover:bg-red-800/60 text-red-400 px-3 py-1 rounded text-[10px] font-semibold transition-colors">
+          <XCircle size={10} /> Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── InsightBadge ──────────────────────────────────────────────────────────────
+function InsightBadge({ insights }: { insights: SessionInsight[] }) {
+  if (!insights.length) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1">
+      {insights.slice(0, 3).map((ins, i) => (
+        <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-900/20 border border-cyan-800/30 text-cyan-400">
+          {ins.insight_type}: {ins.content.slice(0, 40)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ── SessionLog drawer ─────────────────────────────────────────────────────────
+function SessionLog({ messages, onClose }: { messages: Msg[]; onClose: () => void }) {
+  return (
+    <div className="absolute inset-0 bg-[#0d1117] rounded-2xl flex flex-col z-10">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-[#1f2937]">
+        <History size={13} className="text-blue-400" />
+        <span className="text-xs font-semibold text-gray-300">Session Log</span>
+        <span className="text-[10px] text-gray-600 bg-[#1f2937] px-2 py-0.5 rounded-full ml-auto">{messages.length} turns</span>
+        <button onClick={onClose} className="text-gray-500 hover:text-white ml-2"><X size={13} /></button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {messages.map(m => (
+          <div key={m.id} className={cn("text-xs rounded-lg px-3 py-2",
+            m.role === "user" ? "bg-blue-900/20 text-blue-200" : "bg-[#1f2937] text-gray-300")}>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] text-gray-600 uppercase">{m.role}</span>
+              <span className="text-[10px] text-gray-700">{m.timestamp.toLocaleTimeString()}</span>
+              {m.intent && <span className="text-[10px] text-gray-700 ml-auto">{m.intent}</span>}
+            </div>
+            <p className="leading-relaxed line-clamp-3">{m.content}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function NexusVoice() {
-  const [sessionId] = useState(() => getSessionId());
-  const [open, setOpen]             = useState(false);
-  const [minimized, setMinimized]   = useState(false);
-  const [muted, setMuted]           = useState(false);
-  const [voiceMode, setVoiceMode]   = useState(false);
+  const router = useRouter();
+  const sessionId = getSessionId();
+
+  // UI state
+  const [open, setOpen]           = useState(false);
+  const [minimized, setMinimized] = useState(false);
+  const [muted, setMuted]         = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [showLog, setShowLog]     = useState(false);
+  const [unread, setUnread]       = useState(0);
+
+  // Drag state
+  const [drag, setDrag]   = useState({ x: 0, y: 0 });
+  const dragRef           = useRef({ dragging: false, startX: 0, startY: 0, ox: 0, oy: 0 });
+
+  // Chat state
+  const [messages, setMessages]   = useState<Msg[]>([{
+    id: "init",
+    role: "assistant",
+    content: "I'm Nexus. Ask me about any stock, say 'simulate Apple 5 years', or ask me to predict a move. I'll speak my reasoning aloud in voice mode.",
+    timestamp: new Date(),
+  }]);
+  const [input, setInput]         = useState("");
+  const [loading, setLoading]     = useState(false);
+  const [activeSymbol, setActiveSymbol] = useState<string | null>(null);
+
+  // Voice state
   const [listening, setListening]   = useState(false);
   const [continuous, setContinuous] = useState(false);
-  const [input, setInput]           = useState("");
   const [interim, setInterim]       = useState("");
-  const [loading, setLoading]       = useState(false);
-  const [unread, setUnread]         = useState(0);
-  const [activeSymbol, setActiveSymbol] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Msg[]>([{
-    role: "assistant",
-    content: "I'm Nexus. Ask me about any stock, say 'simulate Apple from 2000 to 2010', or ask me to predict a move.",
-    ts: Date.now(),
-  }]);
+  const srRef         = useRef<SR | null>(null);
+  const continuousRef = useRef(false);
 
-  // Drag: offset from default anchor in pixels
-  const [drag, setDrag]   = useState({ x: 0, y: 0 });
-  const dragging          = useRef(false);
-  const dragOrigin        = useRef({ mx: 0, my: 0, ox: 0, oy: 0 });
-  const continuousRef     = useRef(false);
-  const bottomRef         = useRef<HTMLDivElement>(null);
-  const recRef            = useRef<SR | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  const voiceAvailable = typeof window !== "undefined" &&
-    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-
+  // ── Scroll to bottom ──
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [messages, loading]);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  useEffect(() => { if (open) setUnread(0); }, [open]);
+  // ── Unread badge ──
+  useEffect(() => {
+    if (!open) return;
+    setUnread(0);
+  }, [open]);
 
-  // ── Send ──────────────────────────────────────────────────────────────────
+  // ── Drag handlers ──
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, ox: drag.x, oy: drag.y };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current.dragging) return;
+      setDrag({
+        x: dragRef.current.ox + (ev.clientX - dragRef.current.startX),
+        y: dragRef.current.oy + (ev.clientY - dragRef.current.startY),
+      });
+    };
+    const onUp = () => {
+      dragRef.current.dragging = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [drag]);
+
+  // ── App-control dispatcher ──
+  const dispatchCommand = useCallback((cmd: AppCommand) => {
+    switch (cmd.type) {
+      case "navigate":
+        if (cmd.path) router.push(cmd.path);
+        break;
+      case "analyze":
+        if (cmd.symbol) router.push(`/analysis?symbol=${cmd.symbol}`);
+        break;
+      case "simulate":
+        if (cmd.symbol) router.push(`/analysis?symbol=${cmd.symbol}&years=${cmd.years ?? 5}`);
+        break;
+      case "watchlist_add":
+        if (cmd.symbol) {
+          api.addToWatchlist(sessionId, cmd.symbol).catch(() => {});
+        }
+        break;
+      case "show_analysis":
+        router.push("/analysis");
+        break;
+      case "show_events":
+        router.push("/events");
+        break;
+    }
+  }, [router, sessionId]);
+
+  const handleConfirm = useCallback(async (cmdId: string) => {
+    await api.confirmCommand(cmdId, true);
+    // Find the command in messages and execute it
+    for (const msg of messages) {
+      const cmd = msg.pending_confirmations?.find(c => c.id === cmdId);
+      if (cmd) { dispatchCommand(cmd); break; }
+    }
+    setMessages(prev => prev.map(m => ({
+      ...m,
+      pending_confirmations: m.pending_confirmations?.filter(c => c.id !== cmdId),
+    })));
+  }, [messages, dispatchCommand]);
+
+  const handleReject = useCallback(async (cmdId: string) => {
+    await api.confirmCommand(cmdId, false);
+    setMessages(prev => prev.map(m => ({
+      ...m,
+      pending_confirmations: m.pending_confirmations?.filter(c => c.id !== cmdId),
+    })));
+  }, []);
+
+  // ── Send message ──
   const send = useCallback(async (text: string) => {
     const msg = text.trim();
     if (!msg || loading) return;
-    setInput(""); setInterim("");
-    setMessages(prev => [...prev, { role: "user", content: msg, ts: Date.now() }]);
+    setInput("");
+    setInterim("");
+
+    const userMsg: Msg = { id: Date.now().toString(), role: "user", content: msg, timestamp: new Date() };
+    setMessages(prev => [...prev, userMsg]);
     setLoading(true);
+
     try {
       const res: ChatResponse = await api.chat(msg, sessionId, voiceMode);
-      const reply: Msg = {
+
+      if (res.active_symbol) setActiveSymbol(res.active_symbol);
+
+      // Auto-dispatch safe app commands
+      if (res.app_commands?.length) {
+        for (const cmd of res.app_commands) {
+          dispatchCommand(cmd);
+        }
+      }
+
+      const assistantMsg: Msg = {
+        id: (Date.now() + 1).toString(),
         role: "assistant",
         content: res.response,
-        ts: Date.now(),
-        symbols: res.symbols,
-        simulation: res.simulation ?? undefined,
+        timestamp: new Date(),
+        simulation: res.simulation as SimulationResult | undefined,
+        app_commands: res.app_commands,
+        pending_confirmations: res.pending_confirmations,
+        voice_reasoning: res.voice_reasoning,
+        new_insights: res.new_insights,
+        intent: res.intent,
       };
-      setMessages(prev => [...prev, reply]);
+      setMessages(prev => [...prev, assistantMsg]);
+
       if (!open) setUnread(n => n + 1);
-      if (res.active_symbol) setActiveSymbol(res.active_symbol);
-      else if (res.symbols?.[0]) setActiveSymbol(res.symbols[0]);
-      ttsSpeak(res.response, muted);
-    } catch (e: any) {
+
+      // Speak: prefer voice_reasoning (prediction rationale), else response
+      const toSpeak = voiceMode && res.voice_reasoning ? res.voice_reasoning : res.response;
+      ttsSpeak(toSpeak, muted);
+
+    } catch (err: any) {
       setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: `Error: ${e.message || "backend unreachable"}`,
-        ts: Date.now(),
-        isError: true,
+        content: `Error: ${err.message || "Request failed"}`,
+        timestamp: new Date(),
       }]);
     } finally {
       setLoading(false);
     }
-  }, [loading, sessionId, voiceMode, muted, open]);
+  }, [loading, sessionId, voiceMode, muted, open, dispatchCommand]);
 
-  // ── Speech recognition ────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!voiceAvailable) return;
-    const Ctor = (window.SpeechRecognition || window.webkitSpeechRecognition)!;
-    const rec = new Ctor();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = "en-US";
-    rec.onstart = () => setListening(true);
-    rec.onend = () => {
+  // ── Speech recognition ──
+  const startListening = useCallback(() => {
+    const SR = typeof SpeechRecognition !== "undefined" ? SpeechRecognition
+      : typeof webkitSpeechRecognition !== "undefined" ? webkitSpeechRecognition : null;
+    if (!SR) {
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(), role: "system",
+        content: "Speech recognition is not supported in this browser.",
+        timestamp: new Date(),
+      }]);
+      return;
+    }
+    if (srRef.current) { try { srRef.current.abort(); } catch {} }
+    const sr = new SR();
+    sr.continuous = continuousRef.current;
+    sr.interimResults = true;
+    sr.lang = "en-US";
+    srRef.current = sr;
+
+    sr.onstart = () => setListening(true);
+    sr.onend = () => {
       setListening(false);
+      setInterim("");
       if (continuousRef.current) {
-        setTimeout(() => { try { rec.start(); } catch {} }, 250);
+        setTimeout(() => { if (continuousRef.current) startListening(); }, 300);
       }
     };
-    rec.onerror = (e: SRErrorEvent) => {
-      setListening(false);
-      if (e.error === "not-allowed") {
+    sr.onerror = (e) => {
+      if (e.error !== "no-speech" && e.error !== "aborted") {
         setMessages(prev => [...prev, {
-          role: "assistant",
-          content: "Microphone permission denied. Please allow mic access in your browser settings, then reload.",
-          ts: Date.now(), isError: true,
+          id: Date.now().toString(), role: "system",
+          content: `Mic error: ${e.error}`,
+          timestamp: new Date(),
         }]);
-        continuousRef.current = false;
-        setContinuous(false);
       }
+      setListening(false);
     };
-    rec.onresult = (e: SREvent) => {
-      let final = ""; let inter = "";
+    sr.onresult = (e) => {
+      let final = "", inter = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final += e.results[i][0].transcript;
-        else inter += e.results[i][0].transcript;
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t;
+        else inter += t;
       }
-      if (inter) setInterim(inter.trim());
-      if (final.trim()) { setInterim(""); send(final.trim()); }
+      setInterim(inter);
+      if (final.trim()) {
+        setInput(prev => (prev + " " + final).trim());
+        if (continuousRef.current) {
+          setTimeout(() => send(final.trim()), 100);
+        }
+      }
     };
-    recRef.current = rec;
-    return () => { rec.onend = null; try { rec.stop(); } catch {} };
-  }, [send, voiceAvailable]);
+    try { sr.start(); } catch {}
+  }, [send]);
 
-  const startListening = () => {
-    window.speechSynthesis?.cancel();
-    try { recRef.current?.start(); } catch {}
-  };
-  const stopListening = () => {
+  const stopListening = useCallback(() => {
     continuousRef.current = false;
     setContinuous(false);
-    try { recRef.current?.stop(); } catch {}
-  };
-  const toggleContinuous = () => {
-    if (continuous) {
-      continuousRef.current = false;
-      setContinuous(false);
-      try { recRef.current?.stop(); } catch {}
-    } else {
-      window.speechSynthesis?.cancel();
-      continuousRef.current = true;
-      setContinuous(true);
-      try { recRef.current?.start(); } catch {}
-    }
-  };
-
-  // ── Drag ──────────────────────────────────────────────────────────────────
-  const onHeaderMouseDown = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    dragging.current = true;
-    dragOrigin.current = { mx: e.clientX, my: e.clientY, ox: drag.x, oy: drag.y };
-    e.preventDefault();
-  };
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      setDrag({
-        x: dragOrigin.current.ox + (e.clientX - dragOrigin.current.mx),
-        y: dragOrigin.current.oy + (e.clientY - dragOrigin.current.my),
-      });
-    };
-    const onUp = () => { dragging.current = false; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
+    try { srRef.current?.stop(); } catch {}
+    setListening(false);
   }, []);
 
-  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); }
-  };
+  const toggleContinuous = useCallback(() => {
+    const next = !continuous;
+    setContinuous(next);
+    continuousRef.current = next;
+    if (next) startListening();
+    else stopListening();
+  }, [continuous, startListening, stopListening]);
 
-  // Panel position: anchored bottom-right, offset by drag
+  // Cleanup on unmount
+  useEffect(() => () => { try { srRef.current?.abort(); } catch {} }, []);
+
+  // ── Mute toggle ──
+  const toggleMute = useCallback(() => {
+    setMuted(m => {
+      if (!m) window.speechSynthesis?.cancel();
+      return !m;
+    });
+  }, []);
+
+  // ── Render ──
   const panelStyle: React.CSSProperties = {
     position: "fixed",
-    bottom: 24 - drag.y,
-    right:  24 - drag.x,
-    zIndex: 50,
-    width: "min(440px, calc(100vw - 1rem))",
+    bottom: `${24 - drag.y}px`,
+    right: `${24 - drag.x}px`,
+    zIndex: 9999,
   };
 
-  // ── Floating button ───────────────────────────────────────────────────────
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        style={{ position: "fixed", bottom: 24 - drag.y, right: 24 - drag.x, zIndex: 50 }}
-        className={cn(
-          "w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-all hover:scale-105 active:scale-95 group",
-          listening || continuous ? "bg-red-600 ring-4 ring-red-500/30" : "bg-blue-600 hover:bg-blue-500"
-        )}
-      >
-        {listening || continuous
-          ? <Mic size={22} className="text-white animate-pulse" />
-          : <MessageCircle size={22} className="text-white" />}
-        {unread > 0 && (
-          <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full text-[10px] text-white flex items-center justify-center font-bold">
-            {unread}
-          </span>
-        )}
-        <span className="absolute right-full mr-3 px-2.5 py-1 bg-[#1f2937] border border-[#374151] rounded-lg text-xs text-white whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg">
-          Ask Nexus
-        </span>
-      </button>
-    );
-  }
-
-  // ── Open panel ────────────────────────────────────────────────────────────
   return (
-    <div style={panelStyle} className="rounded-2xl border border-[#1f2937] bg-[#0d1117] shadow-2xl">
+    <div style={panelStyle}>
+      {/* ── Collapsed FAB ── */}
+      {!open && (
+        <button onClick={() => setOpen(true)}
+          className="relative w-12 h-12 rounded-full bg-blue-600 hover:bg-blue-500 shadow-2xl flex items-center justify-center transition-all hover:scale-105">
+          <Bot size={22} className="text-white" />
+          {unread > 0 && (
+            <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full text-[10px] text-white flex items-center justify-center font-bold">
+              {unread > 9 ? "9+" : unread}
+            </span>
+          )}
+        </button>
+      )}
 
-      {/* Header */}
-      <div
-        onMouseDown={onHeaderMouseDown}
-        className="flex items-center gap-2 px-3 py-2.5 border-b border-[#1f2937] bg-[#111827] rounded-t-2xl cursor-grab active:cursor-grabbing select-none"
-      >
-        <GripHorizontal size={13} className="text-gray-600 flex-shrink-0 pointer-events-none" />
-        <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0",
-          listening || continuous ? "bg-red-600" : "bg-blue-600")}>
-          <Bot size={13} className="text-white" />
-        </div>
-        <div className="flex-1 min-w-0 pointer-events-none">
-          <div className="text-xs font-semibold text-white">Nexus AI</div>
-          <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-            <span className={cn("w-1.5 h-1.5 rounded-full",
-              listening || continuous ? "bg-red-400 animate-pulse" : "bg-gray-600")} />
-            {continuous ? "Always listening" : listening ? "Listening…" : activeSymbol ? `Tracking ${activeSymbol}` : "Ready"}
+      {/* ── Open panel ── */}
+      {open && (
+        <div className={cn(
+          "flex flex-col bg-[#111827] border border-[#1f2937] rounded-2xl shadow-2xl overflow-hidden transition-all",
+          minimized ? "w-72 h-12" : "w-80 sm:w-96 h-[560px]"
+        )}>
+          {/* Header */}
+          <div onMouseDown={onDragStart}
+            className="flex items-center gap-2 px-3 py-2.5 border-b border-[#1f2937] bg-[#0d1117] cursor-grab active:cursor-grabbing flex-shrink-0 select-none">
+            <GripHorizontal size={13} className="text-gray-600" />
+            <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+              <Bot size={13} className="text-white" />
+            </div>
+            <span className="text-xs font-semibold text-white">Nexus</span>
+            {activeSymbol && (
+              <span className="text-[10px] text-blue-400 font-mono bg-blue-900/20 px-1.5 py-0.5 rounded">
+                {activeSymbol}
+              </span>
+            )}
+            {listening && (
+              <span className="text-[10px] text-red-400 animate-pulse ml-1">● REC</span>
+            )}
+            <div className="flex-1" />
+            {/* Session log */}
+            <button onClick={() => setShowLog(s => !s)} title="Session log"
+              className={cn("p-1 rounded transition-colors", showLog ? "text-blue-400" : "text-gray-500 hover:text-gray-300")}>
+              <History size={13} />
+            </button>
+            {/* Voice mode */}
+            <button onClick={() => setVoiceMode(v => !v)} title="Voice mode"
+              className={cn("p-1 rounded transition-colors", voiceMode ? "text-cyan-400" : "text-gray-500 hover:text-gray-300")}>
+              <Zap size={13} />
+            </button>
+            {/* Mute */}
+            <button onClick={toggleMute} title={muted ? "Unmute" : "Mute"}
+              className="p-1 rounded text-gray-500 hover:text-gray-300 transition-colors">
+              {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+            </button>
+            {/* Minimize */}
+            <button onClick={() => setMinimized(m => !m)}
+              className="p-1 rounded text-gray-500 hover:text-gray-300 transition-colors">
+              {minimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
+            </button>
+            {/* Close */}
+            <button onClick={() => setOpen(false)}
+              className="p-1 rounded text-gray-500 hover:text-red-400 transition-colors">
+              <X size={13} />
+            </button>
           </div>
-        </div>
 
-        <button onClick={() => setVoiceMode(v => !v)}
-          className={cn("text-[10px] px-2 py-1 rounded-md border transition-colors font-medium",
-            voiceMode ? "bg-blue-600/20 border-blue-600/40 text-blue-400" : "border-[#374151] text-gray-600 hover:text-gray-300")}
-          title="Voice mode: shorter spoken responses">
-          Voice
-        </button>
+          {!minimized && (
+            <>
+              {/* Body */}
+              <div className="relative flex-1 overflow-hidden">
+                {/* Session log overlay */}
+                {showLog && <SessionLog messages={messages} onClose={() => setShowLog(false)} />}
 
-        <button onClick={() => { setMuted(m => !m); if (!muted) window.speechSynthesis?.cancel(); }}
-          className={cn("p-1 rounded transition-colors", muted ? "text-gray-600" : "text-gray-400 hover:text-white")}
-          title={muted ? "Unmute" : "Mute"}>
-          {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
-        </button>
+                {/* Messages */}
+                <div className="h-full overflow-y-auto p-3 space-y-3">
+                  {messages.map(msg => (
+                    <div key={msg.id} className={cn("flex gap-2", msg.role === "user" ? "justify-end" : "justify-start")}>
+                      {msg.role !== "user" && (
+                        <div className={cn("w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5",
+                          msg.role === "system" ? "bg-yellow-900/40" : "bg-blue-600")}>
+                          {msg.role === "system" ? <AlertTriangle size={11} className="text-yellow-400" /> : <Bot size={11} className="text-white" />}
+                        </div>
+                      )}
+                      <div className={cn("max-w-[85%] space-y-1")}>
+                        <div className={cn("rounded-2xl px-3 py-2 text-xs leading-relaxed",
+                          msg.role === "user"
+                            ? "bg-blue-600 text-white rounded-br-sm"
+                            : msg.role === "system"
+                            ? "bg-yellow-900/20 border border-yellow-800/30 text-yellow-300"
+                            : "bg-[#1f2937] text-gray-200 rounded-bl-sm")}>
+                          {/* Strip embedded commands from display */}
+                          {msg.content.replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "").trim()}
+                        </div>
 
-        {voiceAvailable && (
-          <button onClick={toggleContinuous}
-            className={cn("p-1 rounded transition-colors",
-              continuous ? "text-red-400" : "text-gray-500 hover:text-gray-300")}
-            title={continuous ? "Stop always-on" : "Always-on listening"}>
-            {continuous ? <Mic size={13} /> : <MicOff size={13} />}
-          </button>
-        )}
+                        {/* Voice reasoning badge */}
+                        {msg.voice_reasoning && (
+                          <div className="flex items-center gap-1 text-[10px] text-cyan-400 px-1">
+                            <Volume2 size={9} />
+                            <span>Reasoning spoken aloud</span>
+                          </div>
+                        )}
 
-        {loading && <Loader2 size={13} className="animate-spin text-blue-400 flex-shrink-0" />}
+                        {/* App commands executed */}
+                        {msg.app_commands && msg.app_commands.length > 0 && (
+                          <div className="flex flex-wrap gap-1 px-1">
+                            {msg.app_commands.map((cmd, i) => (
+                              <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-blue-900/20 border border-blue-800/30 text-blue-400">
+                                ⚡ {cmd.type}{cmd.symbol ? ` ${cmd.symbol}` : ""}{cmd.path ? ` → ${cmd.path}` : ""}
+                              </span>
+                            ))}
+                          </div>
+                        )}
 
-        <button onClick={() => setMinimized(m => !m)}
-          className="p-1 text-gray-500 hover:text-gray-300 transition-colors">
-          {minimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
-        </button>
-        <button onClick={() => { setOpen(false); window.speechSynthesis?.cancel(); stopListening(); }}
-          className="p-1 text-gray-500 hover:text-red-400 transition-colors">
-          <X size={13} />
-        </button>
-      </div>
+                        {/* Pending confirmations */}
+                        {msg.pending_confirmations?.map(cmd => (
+                          <ConfirmationCard key={cmd.id} cmd={cmd}
+                            onConfirm={handleConfirm} onReject={handleReject} />
+                        ))}
 
-      {!minimized && (
-        <>
-          {/* Messages */}
-          <div className="max-h-80 overflow-y-auto px-3 py-3 space-y-3">
-            {messages.slice(-16).map((msg, i) => (
-              <div key={i} className={cn("flex gap-2 text-xs", msg.role === "user" ? "justify-end" : "justify-start")}>
-                {msg.role === "assistant" && (
-                  <div className="w-6 h-6 rounded-full bg-blue-600/20 border border-blue-600/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <Bot size={11} className="text-blue-400" />
-                  </div>
-                )}
-                <div className="max-w-[88%]">
-                  <div className={cn("rounded-xl px-3 py-2 leading-relaxed",
-                    msg.role === "user"
-                      ? "bg-blue-600 text-white rounded-br-sm"
-                      : msg.isError
-                        ? "bg-red-900/20 border border-red-800/30 text-red-300 rounded-bl-sm"
-                        : "bg-[#111827] border border-[#1f2937] text-gray-300 rounded-bl-sm")}>
-                    {msg.content}
-                  </div>
-                  {msg.symbols && msg.symbols.length > 0 && (
-                    <div className="flex gap-1 mt-1 flex-wrap">
-                      {msg.symbols.map(s => (
-                        <button key={s} onClick={() => setActiveSymbol(s)}
-                          className="text-[10px] bg-[#1f2937] text-blue-400 px-1.5 py-0.5 rounded font-mono hover:bg-blue-900/30 transition-colors">
-                          {s}
-                        </button>
-                      ))}
+                        {/* Simulation card */}
+                        {msg.simulation && <SimCard sim={msg.simulation} />}
+
+                        {/* New insights */}
+                        {msg.new_insights && msg.new_insights.length > 0 && (
+                          <InsightBadge insights={msg.new_insights} />
+                        )}
+
+                        <div className="text-[9px] text-gray-700 px-1">
+                          {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                      </div>
+                      {msg.role === "user" && (
+                        <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <User size={11} className="text-gray-300" />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  {loading && (
+                    <div className="flex gap-2 justify-start">
+                      <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+                        <Bot size={11} className="text-white" />
+                      </div>
+                      <div className="bg-[#1f2937] rounded-2xl rounded-bl-sm px-3 py-2">
+                        <Loader2 size={13} className="animate-spin text-blue-400" />
+                      </div>
                     </div>
                   )}
-                  {msg.simulation && <SimCard sim={msg.simulation} />}
-                </div>
-                {msg.role === "user" && (
-                  <div className="w-6 h-6 rounded-full bg-[#1f2937] flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <User size={11} className="text-gray-400" />
-                  </div>
-                )}
-              </div>
-            ))}
 
-            {loading && (
-              <div className="flex gap-2 justify-start">
-                <div className="w-6 h-6 rounded-full bg-blue-600/20 border border-blue-600/30 flex items-center justify-center flex-shrink-0">
-                  <Bot size={11} className="text-blue-400" />
-                </div>
-                <div className="bg-[#111827] border border-[#1f2937] rounded-xl rounded-bl-sm px-3 py-2">
-                  <div className="flex gap-1 items-center h-4">
-                    {[0,150,300].map(d => (
-                      <span key={d} className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce"
-                        style={{ animationDelay: `${d}ms` }} />
-                    ))}
-                  </div>
+                  {interim && (
+                    <div className="text-[10px] text-gray-600 italic px-2">{interim}…</div>
+                  )}
+                  <div ref={bottomRef} />
                 </div>
               </div>
-            )}
 
-            {interim && (
-              <div className="flex justify-end">
-                <div className="bg-blue-600/20 border border-blue-600/20 rounded-xl px-3 py-1.5 text-xs text-blue-300 italic max-w-[85%]">
-                  {interim}…
-                </div>
-              </div>
-            )}
-            <div ref={bottomRef} />
-          </div>
-
-          {/* Input */}
-          <div className="border-t border-[#1f2937] px-3 py-2.5 space-y-2">
-            <div className="flex gap-2">
-              <textarea
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={handleKey}
-                placeholder={continuous ? "Listening… or type here" : "Ask about any stock, scenario, or prediction…"}
-                rows={2}
-                className="flex-1 resize-none rounded-xl border border-[#253044] bg-[#111827] px-3 py-2 text-sm text-gray-100 outline-none placeholder:text-gray-600 focus:border-blue-500 transition-colors"
-              />
-              <div className="flex flex-col gap-1.5">
-                <button onClick={() => send(input)} disabled={!input.trim() || loading}
-                  className="w-9 h-9 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl flex items-center justify-center transition-colors">
-                  <Send size={14} />
-                </button>
-                {voiceAvailable && (
-                  <button
-                    onMouseDown={startListening}
-                    onMouseUp={stopListening}
-                    onTouchStart={startListening}
-                    onTouchEnd={stopListening}
-                    className={cn("w-9 h-9 rounded-xl flex items-center justify-center transition-colors",
-                      listening ? "bg-red-600 text-white" : "bg-[#1f2937] hover:bg-[#374151] text-gray-400 hover:text-white")}
-                    title="Hold to talk">
-                    {listening ? <MicOff size={14} /> : <Mic size={14} />}
+              {/* Input bar */}
+              <div className="flex-shrink-0 border-t border-[#1f2937] bg-[#0d1117] p-2 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <input
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
+                    placeholder={listening ? "Listening…" : "Ask Nexus anything…"}
+                    className="flex-1 bg-[#1f2937] border border-[#374151] rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                  />
+                  <button onClick={() => send(input)} disabled={loading || !input.trim()}
+                    className="w-7 h-7 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg flex items-center justify-center transition-colors flex-shrink-0">
+                    {loading ? <Loader2 size={12} className="animate-spin text-white" /> : <Send size={12} className="text-white" />}
                   </button>
-                )}
+                  {/* Continuous voice toggle */}
+                  <button onClick={toggleContinuous}
+                    title={continuous ? "Stop always-on mic" : "Always-on mic"}
+                    className={cn("w-7 h-7 rounded-lg flex items-center justify-center transition-colors flex-shrink-0",
+                      continuous ? "bg-red-600 hover:bg-red-500" : "bg-[#1f2937] hover:bg-[#374151]")}>
+                    {continuous ? <MicOff size={12} className="text-white" /> : <Mic size={12} className="text-gray-400" />}
+                  </button>
+                  {/* Push-to-talk */}
+                  <button
+                    onMouseDown={() => { continuousRef.current = false; startListening(); }}
+                    onMouseUp={stopListening}
+                    onTouchStart={() => { continuousRef.current = false; startListening(); }}
+                    onTouchEnd={stopListening}
+                    title="Hold to talk"
+                    className={cn("w-7 h-7 rounded-lg flex items-center justify-center transition-colors flex-shrink-0",
+                      listening && !continuous ? "bg-red-600 animate-pulse" : "bg-[#1f2937] hover:bg-[#374151]")}>
+                    <Mic size={12} className={listening && !continuous ? "text-white" : "text-gray-500"} />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between text-[9px] text-gray-700 px-1">
+                  <span>Enter to send · Hold mic to talk · {continuous ? "🔴 Always-on" : "Tap mic for always-on"}</span>
+                  <div className="flex items-center gap-2">
+                    {voiceMode && <span className="text-cyan-600">⚡ Voice mode</span>}
+                    {activeSymbol && <span className="text-blue-600 font-mono">{activeSymbol}</span>}
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center justify-between text-[10px] text-gray-700">
-              <span>Enter to send · Hold mic to talk</span>
-              {activeSymbol && <span className="text-blue-500 font-mono">tracking {activeSymbol}</span>}
-            </div>
-          </div>
-        </>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

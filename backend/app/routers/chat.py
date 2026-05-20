@@ -17,6 +17,8 @@ from app.nexus_core.memory_store import (
 )
 from app.nexus_core.reasoning import reasoning_engine
 from app.services.market_data import market_data_service
+from app.services.app_control import app_control_service
+from app.services.session_learning import session_learning_service
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -42,6 +44,17 @@ class ChatResponse(BaseModel):
     triggered_actions: Optional[List[str]] = None
     simulation: Optional[Dict[str, Any]] = None
     prediction_history: Optional[Dict[str, Any]] = None
+    # App control
+    app_commands: Optional[List[Dict[str, Any]]] = None        # safe, auto-execute
+    pending_confirmations: Optional[List[Dict[str, Any]]] = None  # need user confirm
+    # Voice reasoning
+    voice_reasoning: Optional[str] = None  # spoken summary of prediction rationale
+    # Session insights extracted this turn
+    new_insights: Optional[List[Dict[str, Any]]] = None
+
+
+class ConfirmCommandRequest(BaseModel):
+    confirmed: bool
 
 
 class RenameRequest(BaseModel):
@@ -85,6 +98,33 @@ async def chat(req: ChatRequest):
             })
             reasoning_result = r.to_dict()
 
+    # ── App control: extract commands from response ──
+    all_cmds = app_control_service.extract(response_text)
+    safe_cmds, critical_cmds = app_control_service.classify(all_cmds)
+
+    # Log all commands; critical ones await confirmation
+    for cmd in safe_cmds:
+        await app_control_service.log(session_id, cmd, requires_confirm=False)
+    pending_confirms = []
+    for cmd in critical_cmds:
+        cmd_id = await app_control_service.log(session_id, cmd, requires_confirm=True)
+        pending_confirms.append({"id": cmd_id, **cmd})
+
+    # ── Session learning: extract insights from this turn ──
+    new_insights = await session_learning_service.extract_and_store(
+        session_id=session_id,
+        user_message=req.message,
+        assistant_response=response_text,
+        symbol=symbol,
+        intent=metadata.get("intent", "general"),
+    )
+
+    # ── Voice reasoning: build spoken rationale if prediction present ──
+    voice_reasoning = None
+    if req.voice_mode and metadata.get("prediction_history"):
+        pred = metadata["prediction_history"]
+        voice_reasoning = _build_voice_reasoning(pred, symbol)
+
     return ChatResponse(
         response=response_text,
         session_id=session_id,
@@ -96,7 +136,41 @@ async def chat(req: ChatRequest):
         triggered_actions=metadata.get("triggered_actions", []),
         simulation=metadata.get("simulation"),
         prediction_history=metadata.get("prediction_history"),
+        app_commands=safe_cmds if safe_cmds else None,
+        pending_confirmations=pending_confirms if pending_confirms else None,
+        voice_reasoning=voice_reasoning,
+        new_insights=new_insights if new_insights else None,
     )
+
+
+def _build_voice_reasoning(pred_data: Dict[str, Any], symbol: Optional[str]) -> str:
+    """Build a concise spoken summary of the current prediction rationale."""
+    pred = pred_data.get("prediction", {})
+    direction = pred.get("direction", "neutral")
+    confidence = pred.get("confidence", 0)
+    rationale = pred.get("rationale", [])
+    review = pred_data.get("review", {})
+    wr = review.get("win_rate")
+
+    parts = []
+    sym = symbol or pred_data.get("symbol", "this symbol")
+    dir_word = {"call": "bullish", "put": "bearish", "neutral": "neutral"}.get(direction, direction)
+    parts.append(f"My current thesis on {sym} is {dir_word}, with {int(confidence * 100)} percent confidence.")
+
+    if rationale:
+        parts.append("The key signals are: " + ". ".join(rationale[:3]) + ".")
+
+    if wr is not None:
+        parts.append(f"My recent track record on {sym} is {wr} percent win rate.")
+
+    adj = pred.get("learning_adjustment", {})
+    factor = adj.get("factor", 1.0)
+    if factor > 1.0:
+        parts.append("Recent wins have nudged my confidence up.")
+    elif factor < 1.0:
+        parts.append("Recent losses have reduced my confidence on this direction.")
+
+    return " ".join(parts)
 
 
 # ── Session management ────────────────────────────────────────────────────────
@@ -153,6 +227,38 @@ async def clear_history(session_id: str):
     memory = get_memory_store(session_id)
     await memory.clear_turns()
     return {"cleared": True, "session_id": session_id}
+
+
+# ── App control ───────────────────────────────────────────────────────────────
+
+@router.post("/commands/{cmd_id}/confirm")
+async def confirm_command(cmd_id: str, req: ConfirmCommandRequest):
+    """Confirm or reject a pending critical command."""
+    result = await app_control_service.confirm(cmd_id, req.confirmed)
+    return {"cmd_id": cmd_id, "confirmed": result}
+
+
+@router.get("/commands/{session_id}/pending")
+async def get_pending_commands(session_id: str):
+    """Return commands awaiting user confirmation for a session."""
+    return {"commands": await app_control_service.pending(session_id)}
+
+
+@router.get("/commands/{session_id}/history")
+async def get_command_history(session_id: str):
+    """Return recent command history for a session."""
+    return {"commands": await app_control_service.history(session_id)}
+
+
+# ── Session insights ──────────────────────────────────────────────────────────
+
+@router.get("/insights/{session_id}")
+async def get_session_insights(session_id: str):
+    """Return distilled insights learned from a session's conversations."""
+    from app.services.session_learning import session_learning_service as sls
+    insights = await sls.get_insights(session_id)
+    summary = await sls.get_session_summary(session_id)
+    return {"session_id": session_id, "insights": insights, "summary": summary}
 
 
 # ── Cross-session memory summary ──────────────────────────────────────────────

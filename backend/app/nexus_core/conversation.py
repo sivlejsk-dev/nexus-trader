@@ -224,9 +224,53 @@ class NexusConversationEngine:
         voice_mode: bool = False,
     ) -> List[Dict[str, str]]:
         """Build the full message list for the LLM with deep context injection."""
+        from app.services.session_learning import session_learning_service
+        from app.services.model_refinement import get_global_model_summary
+
         system = _SYSTEM_PROMPT
+
+        # Inject session-learned user profile
+        try:
+            learned = await session_learning_service.build_system_prompt_addon(memory.session_id)
+            if learned:
+                system += f"\n\n{learned}"
+        except Exception:
+            pass
+
+        # Inject global model performance summary
+        try:
+            model_summary = await get_global_model_summary()
+            if model_summary.get("tracked_symbols", 0) > 0:
+                best = model_summary.get("best_performing")
+                worst = model_summary.get("worst_performing")
+                lines = ["\n## Nexus Model Performance (90-day rolling)"]
+                lines.append(f"- Tracking {model_summary['tracked_symbols']} symbols")
+                if best:
+                    lines.append(f"- Best accuracy: {best['symbol']} at {best['win_rate_90d']}% win rate")
+                if worst and worst != best:
+                    lines.append(f"- Weakest: {worst['symbol']} at {worst['win_rate_90d']}% win rate")
+                system += "\n".join(lines)
+        except Exception:
+            pass
+
         if voice_mode:
             system += "\n\n## VOICE MODE: Respond in plain spoken sentences only. No markdown, no bullet points, no headers. Keep each response under 4 sentences unless the user asks for detail."
+
+        # App-control instruction
+        system += (
+            "\n\n## App Control\n"
+            "You can control the app by embedding commands in your response using this exact format: "
+            "[[NEXUS_CMD: {\"type\": \"navigate\", \"path\": \"/analysis\", \"label\": \"Analysis\"}]]\n"
+            "Available safe commands (no confirmation needed):\n"
+            "- navigate: {\"type\":\"navigate\",\"path\":\"/analysis\"}\n"
+            "- analyze: {\"type\":\"analyze\",\"symbol\":\"AAPL\"}\n"
+            "- simulate: {\"type\":\"simulate\",\"symbol\":\"AAPL\",\"years\":5}\n"
+            "- watchlist_add: {\"type\":\"watchlist_add\",\"symbol\":\"AAPL\"}\n"
+            "Commands requiring user confirmation (CRITICAL — always ask before issuing):\n"
+            "- trade_buy / trade_sell / trade_options: always require explicit user confirmation\n"
+            "Only embed a command when it directly serves the user's request. Never embed commands speculatively."
+        )
+
         messages = [{"role": "system", "content": system}]
 
         ctx_blocks: List[str] = []

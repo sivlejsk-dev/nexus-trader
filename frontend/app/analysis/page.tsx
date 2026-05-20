@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Play, RefreshCw, AlertTriangle, TrendingUp, TrendingDown, Minus,
   Globe, ChevronDown, ChevronUp, BrainCircuit, CheckCircle, XCircle,
@@ -602,7 +603,8 @@ function NexusInsight({ sim, live }: { sim: SimulationResult; live: PredictionHi
 
 type Tab = "simulation" | "live" | "events";
 
-export default function AnalysisPage() {
+function AnalysisPageInner() {
+  const searchParams = useSearchParams();
   const [symbol, setSymbol]   = useState("AAPL");
   const [input, setInput]     = useState("AAPL");
   const [years, setYears]     = useState(5);
@@ -628,6 +630,20 @@ export default function AnalysisPage() {
       setLoading(false);
     }
   }, []);
+
+  // Auto-run when Nexus navigates here with ?symbol=AAPL&years=5
+  useEffect(() => {
+    const sym = searchParams.get("symbol");
+    const yr  = parseInt(searchParams.get("years") ?? "5", 10);
+    const hz  = parseInt(searchParams.get("horizon") ?? "20", 10);
+    if (sym) {
+      setInput(sym.toUpperCase());
+      setYears(isNaN(yr) ? 5 : yr);
+      setHorizon(isNaN(hz) ? 20 : hz);
+      run(sym, isNaN(yr) ? 5 : yr, isNaN(hz) ? 20 : hz);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const sim  = data?.simulation ?? null;
   const live = data?.live_predictions ?? null;
@@ -808,5 +824,17 @@ export default function AnalysisPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function AnalysisPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-full bg-[#0a0e1a]">
+        <div className="text-gray-500 text-sm">Loading…</div>
+      </div>
+    }>
+      <AnalysisPageInner />
+    </Suspense>
   );
 }

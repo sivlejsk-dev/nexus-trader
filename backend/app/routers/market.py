@@ -10,6 +10,7 @@ from app.services.pattern_recognition import pattern_engine
 from app.services.adaptive_predictions import adaptive_prediction_service
 from app.services.event_intelligence import event_intelligence_service
 from app.services.historical_simulation import run_simulation, get_events_for_range
+from app.services.model_refinement import model_refinement_service
 from app.nexus_core.reasoning import reasoning_engine
 from app.core.config import settings
 
@@ -304,12 +305,27 @@ async def get_prediction_history(symbol: str):
 
 @router.post("/predictions/{symbol}/score")
 async def score_predictions(symbol: str):
-    """Force-score any pending predictions for a symbol against current price data."""
+    """Force-score pending predictions and refresh model accuracy stats."""
     bars = await market_data_service.get_historical_ohlcv(symbol.upper(), years=2)
     if not bars:
         raise HTTPException(status_code=404, detail=f"No price data for {symbol}")
     await adaptive_prediction_service._score_due_predictions(symbol.upper(), bars)
-    return {"scored": True, "symbol": symbol.upper()}
+    # Refresh rolling accuracy after scoring
+    accuracy = await model_refinement_service.refresh(symbol.upper())
+    return {"scored": True, "symbol": symbol.upper(), "accuracy_updated": accuracy}
+
+
+@router.get("/model-stats/{symbol}")
+async def get_model_stats(symbol: str):
+    """Rolling model accuracy stats for a symbol — win rates per signal, confidence adjustments."""
+    stats = await model_refinement_service.get_stats(symbol.upper())
+    return stats
+
+
+@router.get("/model-stats")
+async def get_global_model_stats():
+    """Cross-symbol model performance summary."""
+    return await model_refinement_service.get_global_summary()
 
 
 @router.get("/simulate/{symbol}")
@@ -354,6 +370,10 @@ async def unified_analysis(
     bars_task = market_data_service.get_historical_ohlcv(sym, years=years)
     live_task = _fetch_live_predictions(sym)
     bars, live_preds = await asyncio.gather(bars_task, live_task)
+
+    # Refresh model accuracy in background (non-blocking)
+    import asyncio as _asyncio
+    _asyncio.create_task(model_refinement_service.refresh(sym))
 
     if not bars:
         raise HTTPException(status_code=404, detail=f"No historical data for {sym}")

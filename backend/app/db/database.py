@@ -132,6 +132,50 @@ CREATE TABLE IF NOT EXISTS event_learning (
     impact_weight            REAL NOT NULL DEFAULT 1,
     updated_at               TEXT NOT NULL
 );
+
+-- Rolling model accuracy: one row per (symbol, signal_key, window)
+-- Updated every time a prediction is scored. Used to refine confidence weights.
+CREATE TABLE IF NOT EXISTS model_accuracy (
+    id              TEXT PRIMARY KEY,
+    symbol          TEXT NOT NULL,
+    signal_key      TEXT NOT NULL,   -- e.g. 'rsi_oversold', 'macd_bullish', 'overall'
+    direction       TEXT NOT NULL,   -- 'call' | 'put' | 'neutral' | 'all'
+    window_days     INTEGER NOT NULL DEFAULT 90,
+    total           INTEGER NOT NULL DEFAULT 0,
+    wins            INTEGER NOT NULL DEFAULT 0,
+    win_rate        REAL,
+    avg_pnl_pct     REAL,
+    confidence_adj  REAL NOT NULL DEFAULT 1.0,  -- multiplier applied to future predictions
+    updated_at      TEXT NOT NULL,
+    UNIQUE(symbol, signal_key, direction, window_days)
+);
+CREATE INDEX IF NOT EXISTS idx_model_accuracy_symbol ON model_accuracy(symbol, signal_key);
+
+-- Session insights: distilled learnings extracted from each conversation
+CREATE TABLE IF NOT EXISTS session_insights (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    symbol      TEXT,
+    insight_type TEXT NOT NULL,  -- 'preference' | 'risk_tolerance' | 'strategy' | 'observation'
+    content     TEXT NOT NULL,
+    confidence  REAL NOT NULL DEFAULT 0.7,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_insights_session ON session_insights(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_insights_symbol ON session_insights(symbol, insight_type);
+
+-- App control log: every command Nexus issued + whether user confirmed
+CREATE TABLE IF NOT EXISTS app_commands (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    command_type    TEXT NOT NULL,  -- 'navigate' | 'analyze' | 'simulate' | 'watchlist_add' | 'trade'
+    payload         TEXT NOT NULL,  -- JSON
+    requires_confirm INTEGER NOT NULL DEFAULT 0,
+    confirmed       INTEGER,        -- NULL=pending, 1=confirmed, 0=rejected
+    executed_at     TEXT,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_commands_session ON app_commands(session_id, created_at);
 """
 
 

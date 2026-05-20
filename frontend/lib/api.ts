@@ -150,6 +150,30 @@ export interface AdaptivePredictionResponse {
   disclaimer: string;
 }
 
+export interface AppCommand {
+  type: string;
+  path?: string;
+  symbol?: string;
+  years?: number;
+  label?: string;
+  _source?: string;
+}
+
+export interface PendingConfirmation extends AppCommand {
+  id: string;
+  created_at?: string;
+}
+
+export interface SessionInsight {
+  id: string;
+  session_id?: string;
+  symbol?: string;
+  insight_type: string;
+  content: string;
+  confidence: number;
+  created_at: string;
+}
+
 export interface ChatResponse {
   response: string;
   session_id: string;
@@ -161,6 +185,11 @@ export interface ChatResponse {
   triggered_actions?: string[];
   simulation?: SimulationResult;
   prediction_history?: PredictionHistoryResponse;
+  // New fields
+  app_commands?: AppCommand[];
+  pending_confirmations?: PendingConfirmation[];
+  voice_reasoning?: string;
+  new_insights?: SessionInsight[];
 }
 
 export interface StrategyScore {
@@ -478,4 +507,28 @@ export const api = {
     req<UnifiedAnalysisResponse>(
       `/market/unified/${symbol}?years=${years}&horizon_days=${horizonDays}&sample_every=${sampleEvery}`
     ),
+
+  // Model accuracy stats
+  modelStats: (symbol: string) =>
+    req<Record<string, unknown>>(`/market/model-stats/${symbol}`),
+
+  globalModelStats: () =>
+    req<Record<string, unknown>>(`/market/model-stats`),
+
+  // App control
+  confirmCommand: (cmdId: string, confirmed: boolean) =>
+    req<{ cmd_id: string; confirmed: boolean }>(`/chat/commands/${cmdId}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ confirmed }),
+    }),
+
+  pendingCommands: (sessionId: string) =>
+    req<{ commands: PendingConfirmation[] }>(`/chat/commands/${sessionId}/pending`),
+
+  commandHistory: (sessionId: string) =>
+    req<{ commands: PendingConfirmation[] }>(`/chat/commands/${sessionId}/history`),
+
+  // Session insights
+  sessionInsights: (sessionId: string) =>
+    req<{ insights: SessionInsight[]; summary: Record<string, unknown> }>(`/chat/insights/${sessionId}`),
 };

@@ -261,7 +261,7 @@ export default function ChatPage() {
   const [interimText, setInterimText] = useState("");
   const recognitionRef = useRef<any>(null);
   const voiceAvailable = typeof window !== "undefined" &&
-    !!(window.SpeechRecognition || (window as any).webkitSpeechRecognition);
+    !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -353,7 +353,7 @@ export default function ChatPage() {
   // Voice recognition setup
   useEffect(() => {
     if (!voiceAvailable) return;
-    const Ctor = (window.SpeechRecognition || (window as any).webkitSpeechRecognition) as any;
+    const Ctor = ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) as any;
     const rec = new Ctor();
     rec.continuous = false; rec.interimResults = true; rec.lang = "en-US";
     rec.onstart = () => setListening(true);
