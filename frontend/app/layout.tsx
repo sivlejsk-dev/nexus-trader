@@ -13,7 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="flex h-screen overflow-hidden bg-[#0a0e1a] text-gray-100">
         <Sidebar />
-        <main className="flex-1 overflow-auto">{children}</main>
+        <main className="flex-1 overflow-auto pt-12 md:pt-0">{children}</main>
         <NexusConversationDock />
       </body>
     </html>

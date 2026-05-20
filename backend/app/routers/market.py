@@ -9,6 +9,7 @@ from app.services.market_data import market_data_service
 from app.services.pattern_recognition import pattern_engine
 from app.services.adaptive_predictions import adaptive_prediction_service
 from app.services.event_intelligence import event_intelligence_service
+from app.services.historical_simulation import run_simulation, get_events_for_range
 from app.nexus_core.reasoning import reasoning_engine
 from app.core.config import settings
 
@@ -167,6 +168,15 @@ async def get_full_analysis(
     return result
 
 
+@router.get("/events/world")
+async def get_world_events(
+    start: str = Query(default="2000-01-01", description="YYYY-MM-DD"),
+    end: str = Query(default="2025-12-31", description="YYYY-MM-DD"),
+):
+    """Return curated world events (wars, macro, weather, social) for a date range."""
+    return {"events": get_events_for_range(start, end)}
+
+
 @router.get("/events/{symbol}")
 async def get_event_intelligence(symbol: str):
     """
@@ -300,3 +310,21 @@ async def score_predictions(symbol: str):
         raise HTTPException(status_code=404, detail=f"No price data for {symbol}")
     await adaptive_prediction_service._score_due_predictions(symbol.upper(), bars)
     return {"scored": True, "symbol": symbol.upper()}
+
+
+@router.get("/simulate/{symbol}")
+async def simulate_history(
+    symbol: str,
+    years: int = Query(default=5, ge=1, le=30),
+    horizon_days: int = Query(default=20, ge=5, le=60),
+    sample_every: int = Query(default=10, ge=5, le=30),
+):
+    """
+    Replay Nexus prediction logic across historical bars for a symbol.
+    Returns predictions with actual outcomes, accuracy metrics, and world events.
+    """
+    bars = await market_data_service.get_historical_ohlcv(symbol.upper(), years=years)
+    if not bars:
+        raise HTTPException(status_code=404, detail=f"No historical data for {symbol}")
+    result = run_simulation(bars, symbol.upper(), horizon_days=horizon_days, sample_every=sample_every)
+    return result

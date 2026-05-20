@@ -228,6 +228,46 @@ export interface MarketProvidersResponse {
   active_fallback_order: string[];
 }
 
+// ── Historical Simulation ─────────────────────────────────────────────────────
+
+export interface SimulationPrediction {
+  entry_date: string;
+  exit_date: string;
+  entry_price: number;
+  exit_price: number;
+  direction: "call" | "put" | "neutral";
+  confidence: number;
+  actual_move_pct: number;
+  pnl_pct: number;
+  outcome: "win" | "loss";
+  rationale: string[];
+  rsi?: number;
+  sma20?: number;
+}
+
+export interface WorldEvent {
+  date: string;
+  end_date: string;
+  title: string;
+  category: string;
+  impact: "bullish" | "bearish" | "volatility";
+  description: string;
+}
+
+export interface SimulationResult {
+  symbol: string;
+  total_predictions: number;
+  wins: number;
+  losses: number;
+  win_rate?: number;
+  avg_pnl_pct?: number;
+  by_direction: Record<string, { total: number; wins: number; win_rate?: number; avg_pnl?: number }>;
+  predictions: SimulationPrediction[];
+  events: WorldEvent[];
+  horizon_days: number;
+  date_range: { start: string; end: string };
+}
+
 // ── Event Intelligence ────────────────────────────────────────────────────────
 
 export interface EventIntelligenceResponse {
@@ -370,6 +410,13 @@ export const api = {
     req(`/watchlist/${sessionId}`, { method: "POST", body: JSON.stringify({ symbol }) }),
   removeFromWatchlist: (sessionId: string, symbol: string) =>
     req(`/watchlist/${sessionId}/${symbol}`, { method: "DELETE" }),
+  // Historical simulation
+  simulate: (symbol: string, years = 5, horizonDays = 20) =>
+    req<SimulationResult>(`/market/simulate/${symbol}?years=${years}&horizon_days=${horizonDays}&sample_every=10`),
+
+  worldEvents: (start: string, end: string) =>
+    req<{ events: WorldEvent[] }>(`/market/events/world?start=${start}&end=${end}`),
+
   // Event Intelligence
   eventIntelligence: (symbol: string) =>
     req<EventIntelligenceResponse>(`/market/events/${symbol}`),
