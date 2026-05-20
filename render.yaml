@@ -1,9 +1,5 @@
 # Render Blueprint — Nexus Trader
 # Docs: https://render.com/docs/blueprint-spec
-#
-# Defines two web services (backend + frontend) and one persistent disk.
-# Deploy by connecting this repo in the Render dashboard and selecting
-# "Blueprint" — Render reads this file automatically.
 
 services:
 
@@ -13,37 +9,27 @@ services:
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-
-    # Render Free tier: 512 MB RAM, shared CPU, spins down after inactivity.
-    # Upgrade to "starter" ($7/mo) to keep it always-on.
     plan: free
-
     healthCheckPath: /health
 
-    # SQLite lives on a persistent disk mounted at /data
     disk:
       name: nexus-db
       mountPath: /data
-      sizeGB: 1          # 1 GB is plenty for SQLite; increase if needed
+      sizeGB: 1
 
     envVars:
-      # ── Runtime path ──────────────────────────────────────────────────────
       - key: NEXUS_DB_PATH
         value: /data/nexus_memory.db
 
       - key: ENVIRONMENT
         value: production
 
-      # CORS: allow the frontend Render URL (set after first deploy)
-      # Replace the placeholder with your actual frontend URL.
+      # Replace with your actual frontend URL after first deploy
       - key: CORS_ORIGINS
         value: '["https://nexus-frontend.onrender.com"]'
 
-      # ── AI / LLM ──────────────────────────────────────────────────────────
-      # Set these in the Render dashboard under Environment → Secret Files,
-      # or paste values directly here (not recommended for secrets).
       - key: NEXUS_API_KEY
-        sync: false          # "sync: false" = Render prompts you to fill it in
+        sync: false
 
       - key: NEXUS_API_BASE_URL
         value: https://api.openai.com/v1
@@ -57,7 +43,6 @@ services:
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
 
-      # ── Market data ───────────────────────────────────────────────────────
       - key: POLYGON_API_KEY
         sync: false
 
@@ -67,27 +52,23 @@ services:
       - key: TRADIER_API_KEY
         sync: false
 
-      # Switch to live Tradier endpoint in production
       - key: TRADIER_BASE_URL
         value: https://api.tradier.com/v1
 
-      # ── Web research ──────────────────────────────────────────────────────
       - key: SERPER_API_KEY
         sync: false
 
       - key: BRAVE_API_KEY
         sync: false
 
-      # ── News / sentiment ──────────────────────────────────────────────────
       - key: NEWS_API_KEY
         sync: false
 
       - key: TWITTER_BEARER_TOKEN
         sync: false
 
-      # ── Auth ──────────────────────────────────────────────────────────────
       - key: JWT_SECRET_KEY
-        generateValue: true    # Render generates a random secret on first deploy
+        generateValue: true
 
 
   # ── Frontend (Next.js) ────────────────────────────────────────────────────
@@ -96,18 +77,12 @@ services:
     runtime: docker
     dockerfilePath: ./frontend/Dockerfile
     dockerContext: ./frontend
-
     plan: free
-
     healthCheckPath: /
 
-    buildArgs:
-      # Baked into the Next.js build so rewrites point at the live backend.
-      # Update this to your actual backend URL after the first deploy.
-      - key: BACKEND_API_URL
-        value: https://nexus-backend.onrender.com
-
     envVars:
+      # Next.js rewrites read this env var at server startup — no build-time
+      # baking needed. Update to your actual backend URL after first deploy.
       - key: BACKEND_API_URL
         value: https://nexus-backend.onrender.com
 

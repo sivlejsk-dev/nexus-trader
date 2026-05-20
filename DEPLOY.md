@@ -159,7 +159,7 @@ in the Render dashboard and are never stored in the repo.
 
 | Variable | Required | Description |
 |---|---|---|
-| `BACKEND_API_URL` | yes | Internal URL of the backend service |
+| `BACKEND_API_URL` | yes | URL of the backend service — read at server startup by Next.js rewrites |
 | `NODE_ENV` | yes | Must be `production` |
 
 ---
