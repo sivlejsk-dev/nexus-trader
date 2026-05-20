@@ -190,6 +190,17 @@ export interface ChatResponse {
   pending_confirmations?: PendingConfirmation[];
   voice_reasoning?: string;
   new_insights?: SessionInsight[];
+  tool_log?: ToolCall[];
+}
+
+export interface ToolCall {
+  tool_call_id: string;
+  name: string;
+  args: Record<string, unknown>;
+  label: string;
+  result: Record<string, unknown>;
+  elapsed: number;
+  round: number;
 }
 
 export interface StrategyScore {

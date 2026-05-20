@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     tradier_api_key: str = ""
     tradier_base_url: str = "https://sandbox.tradier.com/v1"  # swap for api.tradier.com in prod
 
+    # ── Web Research APIs (optional — DuckDuckGo is free fallback) ──────────
+    # Serper.dev — Google search results (~2500 free queries/month)
+    # Get key at: https://serper.dev
+    serper_api_key: str = ""
+
+    # Brave Search API — independent index, privacy-focused
+    # Get key at: https://api.search.brave.com
+    brave_api_key: str = ""
+
     # ── Event Intelligence APIs ──────────────────────────────
     # Alpha Vantage NEWS_SENTIMENT uses ALPHA_VANTAGE_API_KEY when available.
     news_api_key: str = ""

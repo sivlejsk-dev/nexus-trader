@@ -51,6 +51,8 @@ class ChatResponse(BaseModel):
     voice_reasoning: Optional[str] = None  # spoken summary of prediction rationale
     # Session insights extracted this turn
     new_insights: Optional[List[Dict[str, Any]]] = None
+    # Tool calls made during this response (for research panel)
+    tool_log: Optional[List[Dict[str, Any]]] = None
 
 
 class ConfirmCommandRequest(BaseModel):
@@ -140,6 +142,7 @@ async def chat(req: ChatRequest):
         pending_confirmations=pending_confirms if pending_confirms else None,
         voice_reasoning=voice_reasoning,
         new_insights=new_insights if new_insights else None,
+        tool_log=metadata.get("tool_log") or None,
     )
 
 

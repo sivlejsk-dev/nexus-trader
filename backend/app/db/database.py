@@ -164,6 +164,20 @@ CREATE TABLE IF NOT EXISTS session_insights (
 CREATE INDEX IF NOT EXISTS idx_insights_session ON session_insights(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_insights_symbol ON session_insights(symbol, insight_type);
 
+-- Research findings: facts Nexus discovers and stores for future reference
+CREATE TABLE IF NOT EXISTS research_findings (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    symbol      TEXT,
+    category    TEXT NOT NULL,  -- 'strategy' | 'symbol_insight' | 'market_condition' | 'model_improvement' | 'research'
+    content     TEXT NOT NULL,
+    source_url  TEXT,
+    confidence  REAL NOT NULL DEFAULT 0.8,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_findings_symbol ON research_findings(symbol, created_at);
+CREATE INDEX IF NOT EXISTS idx_findings_category ON research_findings(category, created_at);
+
 -- Learned signal weights per symbol — updated by the iterative optimizer
 CREATE TABLE IF NOT EXISTS signal_weights (
     id           TEXT PRIMARY KEY,

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -398,9 +398,24 @@ class NexusConversationEngine:
     )
     async def _call_llm(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         use_groq: bool = False,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
+        """Call LLM without tool support — returns plain text."""
+        content, _ = await self._call_llm_with_tools(messages, tools=None, use_groq=use_groq)
+        return content
+
+    async def _call_llm_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        use_groq: bool = False,
+    ) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
+        """
+        Call LLM with optional tool schemas.
+        Returns (content, tool_calls) where tool_calls is None if no tools were called.
+        """
         client = await self._get_client()
 
         if use_groq and settings.groq_api_key:
@@ -412,15 +427,28 @@ class NexusConversationEngine:
             api_key = settings.nexus_api_key
             model = settings.nexus_model
         else:
-            return self._fallback_response(messages[-1]["content"])
+            return self._fallback_response(messages[-1].get("content", "")), None
+
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 2048,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
 
         resp = await client.post(
             url,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "messages": messages, "temperature": 0.3, "max_tokens": 2048},
+            json=payload,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        msg = resp.json()["choices"][0]["message"]
+        content = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls")  # None if no tools called
+        return content, tool_calls
 
     def _fallback_response(
         self,
@@ -642,11 +670,35 @@ class NexusConversationEngine:
             voice_mode=voice_mode,
         )
 
+        # ── Agentic loop with tool calling ───────────────────────────────────
+        from app.nexus_core.tools import run_agentic_loop, TOOL_SCHEMAS
+        from app.services.research_memory import research_memory_service
+
+        # Inject relevant research memory into system prompt
+        try:
+            research_ctx = await research_memory_service.build_context_for_prompt(
+                symbol=symbol, max_findings=4
+            )
+            if research_ctx and messages:
+                messages[0]["content"] += research_ctx
+        except Exception:
+            pass
+
+        tool_log: List[Dict[str, Any]] = []
+        response = ""
+
         try:
             if not settings.nexus_api_key and not settings.groq_api_key:
                 response = self._fallback_response(user_message, market_context)
             else:
-                response = await self._call_llm(messages)
+                async def _llm_fn(msgs, tools):
+                    return await self._call_llm_with_tools(msgs, tools=tools)
+
+                response, tool_log = await run_agentic_loop(
+                    messages=messages,
+                    call_llm_fn=_llm_fn,
+                    session_id=session_id,
+                )
         except Exception as exc:
             log.warning("nexus_trader.llm_primary_failed", error=str(exc))
             try:
@@ -666,6 +718,7 @@ class NexusConversationEngine:
             "triggered_actions": triggered_actions,
             "simulation": simulation_context,
             "prediction_history": prediction_context,
+            "tool_log": tool_log,  # passed to frontend for research panel
         }
         return response, metadata
 

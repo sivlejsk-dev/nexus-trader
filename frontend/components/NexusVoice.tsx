@@ -15,6 +15,7 @@ import {
   type AppCommand,
   type PendingConfirmation,
   type SessionInsight,
+  type ToolCall,
 } from "@/lib/api";
 import { cn, getSessionId } from "@/lib/utils";
 
@@ -45,6 +46,7 @@ interface Msg {
   pending_confirmations?: PendingConfirmation[];
   voice_reasoning?: string;
   new_insights?: SessionInsight[];
+  tool_log?: ToolCall[];
   intent?: string;
 }
 
@@ -137,6 +139,100 @@ function InsightBadge({ insights }: { insights: SessionInsight[] }) {
           {ins.insight_type}: {ins.content.slice(0, 40)}
         </span>
       ))}
+    </div>
+  );
+}
+
+// ── ToolCallLog ───────────────────────────────────────────────────────────────
+
+const TOOL_ICONS: Record<string, string> = {
+  web_search:       "🔍",
+  fetch_page:       "📄",
+  get_stock_price:  "📈",
+  run_simulation:   "⚙️",
+  optimize_weights: "🧬",
+  research_symbol:  "🔬",
+  research_strategy:"📚",
+  research_event:   "🌐",
+  get_model_stats:  "📊",
+  remember_finding: "💾",
+};
+
+function ToolCallLog({ calls }: { calls: ToolCall[] }) {
+  const [expanded, setExpanded] = useState<number | null>(null);
+  if (!calls.length) return null;
+
+  return (
+    <div className="mt-2 space-y-1">
+      <div className="text-[9px] text-gray-600 uppercase tracking-wide px-1 flex items-center gap-1">
+        <Zap size={8} className="text-yellow-500" />
+        {calls.length} tool{calls.length > 1 ? "s" : ""} used
+      </div>
+      {calls.map((call, i) => {
+        const icon = TOOL_ICONS[call.name] ?? "🔧";
+        const isSearch = call.name === "web_search";
+        const isFetch  = call.name === "fetch_page";
+        const results  = isSearch ? (call.result as any)?.results : null;
+        const sources  = results?.slice(0, 3) as Array<{title: string; url: string; snippet: string}> | null;
+
+        return (
+          <div key={i} className="bg-[#0d1117] border border-[#1f2937] rounded-lg overflow-hidden">
+            <button onClick={() => setExpanded(expanded === i ? null : i)}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-[#1f2937]/40 transition-colors">
+              <span className="text-[11px]">{icon}</span>
+              <span className="text-[10px] text-gray-400 flex-1 truncate">{call.label}</span>
+              <span className="text-[9px] text-gray-700 flex-shrink-0">{call.elapsed}s</span>
+              {expanded === i
+                ? <ChevronUp size={9} className="text-gray-600 flex-shrink-0" />
+                : <ChevronDown size={9} className="text-gray-600 flex-shrink-0" />}
+            </button>
+
+            {expanded === i && (
+              <div className="px-2.5 pb-2.5 space-y-1.5 border-t border-[#1f2937]">
+                {/* Args */}
+                <div className="text-[9px] text-gray-600 pt-1.5">
+                  {Object.entries(call.args).map(([k, v]) => (
+                    <span key={k} className="mr-2">
+                      <span className="text-gray-700">{k}:</span>{" "}
+                      <span className="text-gray-500">{String(v).slice(0, 60)}</span>
+                    </span>
+                  ))}
+                </div>
+
+                {/* Search results */}
+                {sources && sources.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[9px] text-gray-600 uppercase tracking-wide">Sources</div>
+                    {sources.map((s, j) => (
+                      <div key={j} className="text-[10px] space-y-0.5">
+                        <a href={s.url} target="_blank" rel="noopener noreferrer"
+                          className="text-blue-400 hover:text-blue-300 truncate block leading-tight">
+                          {s.title || s.url}
+                        </a>
+                        <p className="text-gray-600 leading-relaxed line-clamp-2">{s.snippet}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Fetch result */}
+                {isFetch && (call.result as any)?.content && (
+                  <div className="text-[10px] text-gray-500 leading-relaxed line-clamp-4">
+                    {String((call.result as any).content).slice(0, 300)}…
+                  </div>
+                )}
+
+                {/* Generic result for other tools */}
+                {!isSearch && !isFetch && (
+                  <div className="text-[10px] text-gray-600 font-mono leading-relaxed">
+                    {JSON.stringify(call.result, null, 2).slice(0, 400)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -316,6 +412,7 @@ export function NexusVoice() {
         pending_confirmations: res.pending_confirmations,
         voice_reasoning: res.voice_reasoning,
         new_insights: res.new_insights,
+        tool_log: res.tool_log,
         intent: res.intent,
       };
       setMessages(prev => [...prev, assistantMsg]);
@@ -539,6 +636,11 @@ export function NexusVoice() {
                           </div>
                         )}
 
+                        {/* Tool calls (research panel) */}
+                        {msg.tool_log && msg.tool_log.length > 0 && (
+                          <ToolCallLog calls={msg.tool_log} />
+                        )}
+
                         {/* Pending confirmations */}
                         {msg.pending_confirmations?.map(cmd => (
                           <ConfirmationCard key={cmd.id} cmd={cmd}
@@ -617,9 +719,13 @@ export function NexusVoice() {
                   </button>
                 </div>
                 <div className="flex items-center justify-between text-[9px] text-gray-700 px-1">
-                  <span>Enter to send · Hold mic to talk · {continuous ? "🔴 Always-on" : "Tap mic for always-on"}</span>
-                  <div className="flex items-center gap-2">
-                    {voiceMode && <span className="text-cyan-600">⚡ Voice mode</span>}
+                  <span className="truncate">
+                    {continuous ? "🔴 Always-on mic" : "Hold 🎤 to talk"}
+                    {" · "}
+                    <span className="text-gray-600">Try: "research NVDA" · "search RSI strategy" · "optimize AAPL"</span>
+                  </span>
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-1">
+                    {voiceMode && <span className="text-cyan-600">⚡</span>}
                     {activeSymbol && <span className="text-blue-600 font-mono">{activeSymbol}</span>}
                   </div>
                 </div>
