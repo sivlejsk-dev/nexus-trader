@@ -7,9 +7,9 @@ import {
   Send, Trash2, Zap, User, Bot, Loader2, AlertTriangle,
   Plus, MessageSquare, Pencil, Check, X, Clock,
   TrendingUp, TrendingDown, Minus, BarChart2, ExternalLink,
-  BrainCircuit, Target, Globe,
+  BrainCircuit, Globe, Mic, MicOff, Volume2, VolumeX,
 } from "lucide-react";
-import { api, type ChatResponse, type ChatSession, type FullAnalysis } from "@/lib/api";
+import { api, type ChatResponse, type ChatSession, type FullAnalysis, type SimulationResult } from "@/lib/api";
 import { getSessionId, cn, fmtPrice, fmtPct, changeColor, confidenceColor, directionColor } from "@/lib/utils";
 
 interface Message {
@@ -18,6 +18,47 @@ interface Message {
   intent?: string;
   symbols?: string[];
   timestamp: Date;
+  simulation?: SimulationResult;
+  triggeredActions?: string[];
+}
+
+// ── Inline simulation result card ─────────────────────────────────────────────
+
+function InlineSimulation({ sim }: { sim: SimulationResult }) {
+  const wr = sim.win_rate;
+  const dr = sim.date_range || {};
+  return (
+    <div className="mt-2 bg-[#0d1117] border border-[#1f2937] rounded-xl p-3 text-xs space-y-2">
+      <div className="flex items-center gap-2">
+        <BarChart2 size={12} className="text-blue-400" />
+        <span className="font-semibold text-gray-200">{sim.symbol} — Historical Simulation</span>
+        <span className="text-gray-600 ml-auto">{dr.start?.slice(0,4)} – {dr.end?.slice(0,4)}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-center">
+        {[
+          { label: "Win Rate",    value: wr != null ? `${wr}%` : "—",   color: (wr ?? 0) >= 55 ? "text-green-400" : "text-red-400" },
+          { label: "Predictions", value: sim.total_predictions,          color: "text-white" },
+          { label: "Avg P&L",     value: sim.avg_pnl_pct != null ? `${sim.avg_pnl_pct > 0 ? "+" : ""}${sim.avg_pnl_pct}%` : "—",
+            color: (sim.avg_pnl_pct ?? 0) >= 0 ? "text-green-400" : "text-red-400" },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="bg-[#111827] rounded-lg p-2">
+            <div className={cn("text-base font-bold font-mono", color)}>{value}</div>
+            <div className="text-[10px] text-gray-600">{label}</div>
+          </div>
+        ))}
+      </div>
+      {sim.events && sim.events.length > 0 && (
+        <div className="text-[10px] text-gray-500">
+          {sim.events.length} world events in this period ·{" "}
+          {sim.events.slice(0, 2).map(e => e.title).join(", ")}
+          {sim.events.length > 2 ? ` +${sim.events.length - 2} more` : ""}
+        </div>
+      )}
+      <a href={`/simulate`} className="block text-center text-[10px] text-blue-400 hover:text-blue-300 transition-colors pt-1">
+        Open full simulation →
+      </a>
+    </div>
+  );
 }
 
 function formatRelative(iso: string): string {
@@ -214,11 +255,19 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>(() => getSessionId());
   const [activeSymbol, setActiveSymbol] = useState<string | null>(null);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [interimText, setInterimText] = useState("");
+  const recognitionRef = useRef<any>(null);
+  const voiceAvailable = typeof window !== "undefined" &&
+    !!(window.SpeechRecognition || (window as any).webkitSpeechRecognition);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
+  const [memorySuggestions, setMemorySuggestions] = useState<string[]>([]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -247,21 +296,48 @@ export default function ChatPage() {
   useEffect(() => { loadSessionHistory(sessionId); }, [sessionId, loadSessionHistory]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
+  // Load memory-based suggestions on mount
+  useEffect(() => {
+    api.memorySummary().then((mem) => {
+      const suggestions: string[] = [];
+      if (mem.top_symbols[0]) suggestions.push(`Analyze ${mem.top_symbols[0].symbol} for me`);
+      if (mem.top_symbols[1]) suggestions.push(`Should I buy ${mem.top_symbols[1].symbol} calls?`);
+      if (mem.recent_scenarios[0]) suggestions.push(`Run that simulation again`);
+      if (mem.recent_predictions[0]) {
+        const p = mem.recent_predictions[0];
+        suggestions.push(`How accurate was your ${p.symbol} ${p.direction} call?`);
+      }
+      if (suggestions.length > 0) setMemorySuggestions(suggestions);
+    }).catch(() => {});
+  }, []);
+
+  // TTS helper
+  const speak = useCallback((text: string) => {
+    if (muted || typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const clean = text.replace(/```[\s\S]*?```/g, "").replace(/[#*_`>[\]()]/g, "").replace(/\s+/g, " ").trim().slice(0, 500);
+    const utt = new SpeechSynthesisUtterance(clean);
+    utt.rate = 1.0; utt.pitch = 0.95;
+    window.speechSynthesis.speak(utt);
+  }, [muted]);
+
   const send = useCallback(async (text: string) => {
     const msg = text.trim();
     if (!msg || loading) return;
     setMessages((prev) => [...prev, { role: "user", content: msg, timestamp: new Date() }]);
-    setInput("");
+    setInput(""); setInterimText("");
     setLoading(true);
     try {
-      const res: ChatResponse = await api.chat(msg, sessionId);
+      const res: ChatResponse = await api.chat(msg, sessionId, voiceMode);
       setMessages((prev) => [...prev, {
         role: "assistant", content: res.response,
         intent: res.intent, symbols: res.symbols, timestamp: new Date(),
+        simulation: res.simulation,
+        triggeredActions: res.triggered_actions,
       }]);
-      // Auto-show symbol panel when Nexus detects a ticker
       if (res.active_symbol) setActiveSymbol(res.active_symbol);
       else if (res.symbols && res.symbols.length > 0) setActiveSymbol(res.symbols[0]);
+      if (voiceMode) speak(res.response);
       loadSessions();
     } catch (e: any) {
       setMessages((prev) => [...prev, {
@@ -272,7 +348,36 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
     }
-  }, [loading, sessionId, loadSessions]);
+  }, [loading, sessionId, loadSessions, voiceMode, speak]);
+
+  // Voice recognition setup
+  useEffect(() => {
+    if (!voiceAvailable) return;
+    const Ctor = (window.SpeechRecognition || (window as any).webkitSpeechRecognition) as any;
+    const rec = new Ctor();
+    rec.continuous = false; rec.interimResults = true; rec.lang = "en-US";
+    rec.onstart = () => setListening(true);
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    rec.onresult = (e: any) => {
+      let final = ""; let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      if (interim) setInterimText(interim.trim());
+      if (final.trim()) { setInterimText(""); send(final.trim()); }
+    };
+    recognitionRef.current = rec;
+    return () => { rec.onend = null; try { rec.stop(); } catch {} };
+  }, [send, voiceAvailable]);
+
+  const toggleListen = () => {
+    const rec = recognitionRef.current;
+    if (!rec) return;
+    if (listening) { try { rec.stop(); } catch {} }
+    else { window.speechSynthesis?.cancel(); try { rec.start(); } catch {} }
+  };
 
   const newSession = () => {
     const id = `session_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -380,6 +485,26 @@ export default function ChatPage() {
               <BarChart2 size={10} /> {activeSymbol} <X size={9} />
             </button>
           )}
+          {/* Voice controls */}
+          <button onClick={() => setVoiceMode((v) => !v)}
+            className={cn("text-[10px] px-2 py-1 rounded-lg border transition-colors font-medium",
+              voiceMode ? "bg-blue-600/20 border-blue-600/40 text-blue-400" : "border-[#374151] text-gray-600 hover:text-gray-300")}
+            title="Voice mode: shorter spoken responses">
+            Voice
+          </button>
+          <button onClick={() => setMuted((m) => !m)}
+            className={cn("p-1.5 rounded-lg transition-colors", muted ? "text-gray-600" : "text-gray-400 hover:text-white")}
+            title={muted ? "Unmute" : "Mute TTS"}>
+            {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+          </button>
+          {voiceAvailable && (
+            <button onClick={toggleListen}
+              className={cn("p-1.5 rounded-lg transition-colors",
+                listening ? "text-red-400 bg-red-900/20" : "text-gray-500 hover:text-gray-300 hover:bg-[#1f2937]")}
+              title={listening ? "Stop listening" : "Push to talk"}>
+              {listening ? <MicOff size={13} /> : <Mic size={13} />}
+            </button>
+          )}
           {messages.length > 0 && (
             <button onClick={clearChat} className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-red-400 transition-colors">
               <Trash2 size={12} /> Clear
@@ -397,16 +522,25 @@ export default function ChatPage() {
                 <h2 className="text-lg font-semibold text-white mb-2">Nexus AI Trading Assistant</h2>
                 <p className="text-sm text-gray-500 max-w-md leading-relaxed">
                   Mention any ticker and Nexus will pull up live analysis, call/put predictions, and event intelligence automatically.
+                  Say "simulate Apple from 1995 to 2000" and Nexus will run it and explain the results.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2 justify-center">
-                {["Analyze AAPL for me", "What's NVDA doing?", "Should I buy TSLA calls?", "Show me SPY patterns"].map((q) => (
+                {(memorySuggestions.length > 0 ? memorySuggestions : [
+                  "Analyze AAPL for me",
+                  "Simulate NVDA over the last 5 years",
+                  "Should I buy TSLA calls?",
+                  "How accurate have your predictions been?",
+                ]).map((q) => (
                   <button key={q} onClick={() => send(q)}
                     className="text-xs bg-[#111827] border border-[#1f2937] text-gray-400 hover:text-white hover:border-blue-600/40 px-3 py-1.5 rounded-lg transition-colors">
                     {q}
                   </button>
                 ))}
               </div>
+              {memorySuggestions.length > 0 && (
+                <p className="text-[10px] text-gray-700">Suggestions based on your history</p>
+              )}
             </div>
           )}
 
@@ -417,27 +551,36 @@ export default function ChatPage() {
                   <Bot size={13} className="text-blue-400" />
                 </div>
               )}
-              <div className={cn("max-w-[78%] rounded-2xl px-4 py-3 text-sm",
-                msg.role === "user"
-                  ? "bg-blue-600 text-white rounded-tr-sm"
-                  : "bg-[#111827] border border-[#1f2937] text-gray-200 rounded-tl-sm")}>
-                {msg.role === "assistant"
-                  ? <div className="prose-nexus"><ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown></div>
-                  : <p>{msg.content}</p>}
-                <div className="flex items-center gap-2 mt-2 flex-wrap">
-                  <span className="text-[10px] opacity-40">
-                    {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  </span>
-                  {msg.intent && msg.intent !== "general" && (
-                    <span className="text-[10px] bg-blue-900/30 text-blue-400 px-1.5 py-0.5 rounded">{msg.intent.replace(/_/g, " ")}</span>
-                  )}
-                  {msg.symbols?.map((s) => (
-                    <button key={s} onClick={() => setActiveSymbol(s)}
-                      className="text-[10px] bg-gray-800 hover:bg-blue-900/30 text-gray-400 hover:text-blue-400 px-1.5 py-0.5 rounded font-mono transition-colors">
-                      {s}
-                    </button>
-                  ))}
+              <div className={cn("max-w-[78%]")}>
+                <div className={cn("rounded-2xl px-4 py-3 text-sm",
+                  msg.role === "user"
+                    ? "bg-blue-600 text-white rounded-tr-sm"
+                    : "bg-[#111827] border border-[#1f2937] text-gray-200 rounded-tl-sm")}>
+                  {msg.role === "assistant"
+                    ? <div className="prose-nexus"><ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown></div>
+                    : <p>{msg.content}</p>}
+                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                    <span className="text-[10px] opacity-40">
+                      {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                    {msg.intent && msg.intent !== "general" && (
+                      <span className="text-[10px] bg-blue-900/30 text-blue-400 px-1.5 py-0.5 rounded">{msg.intent.replace(/_/g, " ")}</span>
+                    )}
+                    {msg.triggeredActions && msg.triggeredActions.length > 0 && (
+                      <span className="text-[10px] bg-cyan-900/30 text-cyan-400 px-1.5 py-0.5 rounded">
+                        auto: {msg.triggeredActions[0].split(":")[0]}
+                      </span>
+                    )}
+                    {msg.symbols?.map((s) => (
+                      <button key={s} onClick={() => setActiveSymbol(s)}
+                        className="text-[10px] bg-gray-800 hover:bg-blue-900/30 text-gray-400 hover:text-blue-400 px-1.5 py-0.5 rounded font-mono transition-colors">
+                        {s}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+                {/* Inline simulation result */}
+                {msg.simulation && <InlineSimulation sim={msg.simulation} />}
               </div>
               {msg.role === "user" && (
                 <div className="w-7 h-7 rounded-lg bg-gray-700 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -446,6 +589,15 @@ export default function ChatPage() {
               )}
             </div>
           ))}
+
+          {/* Interim voice text */}
+          {interimText && (
+            <div className="flex justify-end">
+              <div className="bg-blue-600/20 border border-blue-600/20 rounded-2xl rounded-tr-sm px-4 py-2 text-sm text-blue-300 italic max-w-[78%]">
+                {interimText}…
+              </div>
+            </div>
+          )}
 
           {loading && (
             <div className="flex gap-3">
@@ -471,16 +623,24 @@ export default function ChatPage() {
         <div className="px-5 pb-4 pt-2">
           <div className="flex items-end gap-2 bg-[#111827] border border-[#1f2937] focus-within:border-blue-600/50 rounded-xl px-4 py-3 transition-colors">
             <textarea autoFocus value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKey}
-              placeholder="Ask about stocks, options, patterns, strategies… mention any ticker"
+              placeholder={listening ? "Listening… or type here" : "Ask about stocks, options, patterns, strategies… mention any ticker"}
               rows={1}
               className="flex-1 bg-transparent text-sm text-gray-200 placeholder-gray-600 resize-none focus:outline-none max-h-32"
               style={{ lineHeight: "1.5" }} />
+            {voiceAvailable && (
+              <button onClick={toggleListen}
+                className={cn("w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0",
+                  listening ? "bg-red-600 hover:bg-red-500" : "bg-[#1f2937] hover:bg-[#374151] text-gray-400 hover:text-white")}
+                title={listening ? "Stop" : "Push to talk"}>
+                {listening ? <MicOff size={14} className="text-white" /> : <Mic size={14} />}
+              </button>
+            )}
             <button onClick={() => send(input)} disabled={!input.trim() || loading}
               className="w-8 h-8 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 flex items-center justify-center transition-colors flex-shrink-0">
               <Send size={14} className="text-white" />
             </button>
           </div>
-          <p className="text-[10px] text-gray-700 mt-1.5 text-center">Enter to send · Shift+Enter for new line</p>
+          <p className="text-[10px] text-gray-700 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Mic for voice</p>
         </div>
       </div>
 

@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     symbol: Optional[str] = None
     include_reasoning: bool = False
+    voice_mode: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -38,6 +39,9 @@ class ChatResponse(BaseModel):
     active_symbol: Optional[str]
     reasoning: Optional[Dict[str, Any]] = None
     market_context: Optional[Dict[str, Any]] = None
+    triggered_actions: Optional[List[str]] = None
+    simulation: Optional[Dict[str, Any]] = None
+    prediction_history: Optional[Dict[str, Any]] = None
 
 
 class RenameRequest(BaseModel):
@@ -65,7 +69,7 @@ async def chat(req: ChatRequest):
             pass
 
     response_text, metadata = await conversation_engine.chat(
-        req.message, memory, market_context=market_ctx
+        req.message, memory, market_context=market_ctx, voice_mode=req.voice_mode
     )
 
     # Structured reasoning overlay
@@ -89,6 +93,9 @@ async def chat(req: ChatRequest):
         active_symbol=metadata.get("active_symbol"),
         reasoning=reasoning_result,
         market_context=market_ctx,
+        triggered_actions=metadata.get("triggered_actions", []),
+        simulation=metadata.get("simulation"),
+        prediction_history=metadata.get("prediction_history"),
     )
 
 
@@ -146,3 +153,87 @@ async def clear_history(session_id: str):
     memory = get_memory_store(session_id)
     await memory.clear_turns()
     return {"cleared": True, "session_id": session_id}
+
+
+# ── Cross-session memory summary ──────────────────────────────────────────────
+
+@router.get("/memory/summary")
+async def memory_summary():
+    """
+    Return a cross-session summary: most-discussed symbols, recent scenarios,
+    and prediction outcomes across all sessions. Used by Nexus to recall context.
+    """
+    from app.db.database import get_db
+    import aiosqlite as _aiosqlite
+
+    async with get_db() as db:
+        db.row_factory = _aiosqlite.Row
+
+        # Most mentioned symbols across all turns
+        cursor = await db.execute("""
+            SELECT symbols, COUNT(*) as cnt
+            FROM turns
+            WHERE symbols IS NOT NULL AND symbols != '[]'
+            GROUP BY symbols
+            ORDER BY cnt DESC
+            LIMIT 20
+        """)
+        symbol_rows = await cursor.fetchall()
+
+        # Recent simulation-like queries
+        cursor2 = await db.execute("""
+            SELECT content, timestamp, session_id
+            FROM turns
+            WHERE role = 'user'
+              AND (content LIKE '%simulat%' OR content LIKE '%backtest%'
+                   OR content LIKE '%from 19%' OR content LIKE '%from 20%'
+                   OR content LIKE '%years ago%')
+            ORDER BY timestamp DESC
+            LIMIT 10
+        """)
+        scenario_rows = await cursor2.fetchall()
+
+        # Prediction outcomes
+        cursor3 = await db.execute("""
+            SELECT symbol, predicted_direction, outcome_status, pnl_pct, created_at
+            FROM prediction_events
+            ORDER BY created_at DESC
+            LIMIT 20
+        """)
+        pred_rows = await cursor3.fetchall()
+
+    import json as _json
+
+    # Aggregate symbols
+    symbol_counts: dict = {}
+    for row in symbol_rows:
+        try:
+            syms = _json.loads(row["symbols"])
+            for s in syms:
+                symbol_counts[s] = symbol_counts.get(s, 0) + row["cnt"]
+        except Exception:
+            pass
+
+    top_symbols = sorted(symbol_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    scenarios = [
+        {"query": row["content"][:120], "timestamp": row["timestamp"], "session_id": row["session_id"]}
+        for row in scenario_rows
+    ]
+
+    predictions = [
+        {
+            "symbol": row["symbol"],
+            "direction": row["predicted_direction"],
+            "outcome": row["outcome_status"],
+            "pnl_pct": row["pnl_pct"],
+            "date": row["created_at"][:10],
+        }
+        for row in pred_rows
+    ]
+
+    return {
+        "top_symbols": [{"symbol": s, "mentions": c} for s, c in top_symbols],
+        "recent_scenarios": scenarios,
+        "recent_predictions": predictions,
+    }

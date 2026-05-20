@@ -158,6 +158,9 @@ export interface ChatResponse {
   active_symbol?: string;
   reasoning?: Record<string, unknown>;
   market_context?: Record<string, unknown>;
+  triggered_actions?: string[];
+  simulation?: SimulationResult;
+  prediction_history?: PredictionHistoryResponse;
 }
 
 export interface StrategyScore {
@@ -335,10 +338,16 @@ export interface PredictionHistoryResponse {
 
 export const api = {
   // Chat
-  chat: (message: string, sessionId: string, symbol?: string) =>
+  chat: (message: string, sessionId: string, voiceModeOrSymbol?: boolean | string) =>
     req<ChatResponse>("/chat", {
       method: "POST",
-      body: JSON.stringify({ message, session_id: sessionId, symbol, include_reasoning: true }),
+      body: JSON.stringify({
+        message,
+        session_id: sessionId,
+        symbol: typeof voiceModeOrSymbol === "string" ? voiceModeOrSymbol : undefined,
+        voice_mode: typeof voiceModeOrSymbol === "boolean" ? voiceModeOrSymbol : false,
+        include_reasoning: true,
+      }),
     }),
 
   clearHistory: (sessionId: string) =>
@@ -410,6 +419,14 @@ export const api = {
     req(`/watchlist/${sessionId}`, { method: "POST", body: JSON.stringify({ symbol }) }),
   removeFromWatchlist: (sessionId: string, symbol: string) =>
     req(`/watchlist/${sessionId}/${symbol}`, { method: "DELETE" }),
+  // Cross-session memory summary
+  memorySummary: () =>
+    req<{
+      top_symbols: Array<{ symbol: string; mentions: number }>;
+      recent_scenarios: Array<{ query: string; timestamp: string; session_id: string }>;
+      recent_predictions: Array<{ symbol: string; direction: string; outcome: string; pnl_pct?: number; date: string }>;
+    }>("/chat/memory/summary"),
+
   // Historical simulation
   simulate: (symbol: string, years = 5, horizonDays = 20) =>
     req<SimulationResult>(`/market/simulate/${symbol}?years=${years}&horizon_days=${horizonDays}&sample_every=10`),

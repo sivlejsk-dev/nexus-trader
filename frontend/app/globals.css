@@ -63,3 +63,9 @@ html, body {
   50% { opacity: 0.4; }
 }
 .live-dot { animation: pulse-green 2s ease-in-out infinite; }
+
+/* Waveform bar animation */
+@keyframes wave {
+  0%   { height: 20%; }
+  100% { height: 90%; }
+}
