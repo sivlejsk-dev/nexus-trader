@@ -240,12 +240,19 @@ export interface SimulationPrediction {
   exit_price: number;
   direction: "call" | "put" | "neutral";
   confidence: number;
+  raw_confidence?: number;
+  learning_factor?: number;
   actual_move_pct: number;
   pnl_pct: number;
   outcome: "win" | "loss";
   rationale: string[];
   rsi?: number;
   sma20?: number;
+  macd?: number;
+  bb_pct_b?: number;
+  vol_ratio?: number;
+  bullish_score?: number;
+  bearish_score?: number;
 }
 
 export interface WorldEvent {
@@ -257,6 +264,12 @@ export interface WorldEvent {
   description: string;
 }
 
+export interface SignalStat {
+  total: number;
+  wins: number;
+  win_rate?: number | null;
+}
+
 export interface SimulationResult {
   symbol: string;
   total_predictions: number;
@@ -264,11 +277,25 @@ export interface SimulationResult {
   losses: number;
   win_rate?: number;
   avg_pnl_pct?: number;
-  by_direction: Record<string, { total: number; wins: number; win_rate?: number; avg_pnl?: number }>;
+  by_direction: Record<string, {
+    total: number;
+    wins: number;
+    win_rate?: number;
+    avg_pnl?: number;
+    learning_factor?: number;
+  }>;
+  signal_stats?: Record<string, SignalStat>;
+  learning_factors?: Record<string, number>;
   predictions: SimulationPrediction[];
   events: WorldEvent[];
   horizon_days: number;
   date_range: { start: string; end: string };
+}
+
+export interface UnifiedAnalysisResponse {
+  symbol: string;
+  simulation: SimulationResult;
+  live_predictions: PredictionHistoryResponse;
 }
 
 // ── Event Intelligence ────────────────────────────────────────────────────────
@@ -446,4 +473,9 @@ export const api = {
   scorePredictions: (symbol: string) =>
     req<{ scored: number }>(`/market/predictions/${symbol}/score`, { method: "POST" }),
 
+  // Unified analysis — simulation + live predictions in one call
+  unifiedAnalysis: (symbol: string, years = 5, horizonDays = 20, sampleEvery = 10) =>
+    req<UnifiedAnalysisResponse>(
+      `/market/unified/${symbol}?years=${years}&horizon_days=${horizonDays}&sample_every=${sampleEvery}`
+    ),
 };

@@ -6,22 +6,21 @@ import {
   BarChart2, MessageSquare, TrendingUp, Activity,
   BookOpen, Star, ChevronRight, Zap,
   PanelLeftClose, PanelLeftOpen, Globe, BrainCircuit,
-  FlaskConical, Menu, X, History,
+  FlaskConical, Menu, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
 
 const NAV = [
-  { href: "/console",     label: "Console",     icon: BarChart2,    desc: "Visual analysis" },
-  { href: "/chat",        label: "Nexus AI",    icon: MessageSquare,desc: "AI assistant" },
-  { href: "/simulate",    label: "Simulate",    icon: History,      desc: "History replay" },
-  { href: "/scanner",     label: "Scanner",     icon: Activity,     desc: "Options flow" },
-  { href: "/backtest",    label: "Backtest",    icon: TrendingUp,   desc: "Strategy testing" },
-  { href: "/events",      label: "Events",      icon: Globe,        desc: "Market events" },
-  { href: "/predictions", label: "Predictions", icon: BrainCircuit, desc: "AI accuracy" },
-  { href: "/watchlist",   label: "Watchlist",   icon: Star,         desc: "Track symbols" },
-  { href: "/learn",       label: "Learn",       icon: BookOpen,     desc: "Education" },
-  { href: "/test",        label: "API Tests",   icon: FlaskConical, desc: "Live endpoint tests" },
+  { href: "/console",   label: "Console",   icon: BarChart2,    desc: "Visual analysis" },
+  { href: "/chat",      label: "Nexus AI",  icon: MessageSquare,desc: "AI assistant" },
+  { href: "/analysis",  label: "Analysis",  icon: BrainCircuit, desc: "Sim + predictions" },
+  { href: "/scanner",   label: "Scanner",   icon: Activity,     desc: "Options flow" },
+  { href: "/backtest",  label: "Backtest",  icon: TrendingUp,   desc: "Strategy testing" },
+  { href: "/events",    label: "Events",    icon: Globe,        desc: "Market events" },
+  { href: "/watchlist", label: "Watchlist", icon: Star,         desc: "Track symbols" },
+  { href: "/learn",     label: "Learn",     icon: BookOpen,     desc: "Education" },
+  { href: "/test",      label: "API Tests", icon: FlaskConical, desc: "Live endpoint tests" },
 ];
 
 const STORAGE_KEY = "nexus_sidebar_collapsed";

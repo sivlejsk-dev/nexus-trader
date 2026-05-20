@@ -328,3 +328,116 @@ async def simulate_history(
         raise HTTPException(status_code=404, detail=f"No historical data for {symbol}")
     result = run_simulation(bars, symbol.upper(), horizon_days=horizon_days, sample_every=sample_every)
     return result
+
+
+@router.get("/unified/{symbol}")
+async def unified_analysis(
+    symbol: str,
+    years: int = Query(default=5, ge=1, le=30),
+    horizon_days: int = Query(default=20, ge=5, le=60),
+    sample_every: int = Query(default=10, ge=5, le=30),
+    session_id: str = Query(default="console"),
+):
+    """
+    Unified analysis: historical simulation (with adaptive learning from live
+    predictions) + live prediction history + signal quality breakdown + world
+    events — all in one call. Used by the Analysis page.
+    """
+    import asyncio
+    import json as _json
+    import aiosqlite as _aiosqlite
+    from app.db.database import get_db
+
+    sym = symbol.upper()
+
+    # Fetch bars and live predictions concurrently
+    bars_task = market_data_service.get_historical_ohlcv(sym, years=years)
+    live_task = _fetch_live_predictions(sym)
+    bars, live_preds = await asyncio.gather(bars_task, live_task)
+
+    if not bars:
+        raise HTTPException(status_code=404, detail=f"No historical data for {sym}")
+
+    # Run upgraded simulation with adaptive learning from live outcomes
+    sim = run_simulation(
+        bars, sym,
+        horizon_days=horizon_days,
+        sample_every=sample_every,
+        live_predictions=live_preds,
+    )
+
+    # Build live performance summary
+    completed = [p for p in live_preds if p.get("outcome_status") in ("win", "loss", "flat")]
+    wins_live = [p for p in completed if p.get("outcome_status") == "win"]
+    losses_live = [p for p in completed if p.get("outcome_status") == "loss"]
+    pending_live = [p for p in live_preds if p.get("outcome_status") == "pending"]
+
+    by_dir_live: dict = {}
+    for direction in ("call", "put", "neutral"):
+        ds = [p for p in completed if p.get("direction") == direction]
+        dw = [p for p in ds if p.get("outcome_status") == "win"]
+        total = len(ds)
+        wins_d = len(dw)
+        wr = round(wins_d / total * 100, 1) if total else None
+        factor = 1.0
+        if total >= 4:
+            rate = wins_d / total
+            factor = 1.08 if rate >= 0.62 else (0.88 if rate <= 0.38 else 1.0)
+        by_dir_live[direction] = {
+            "total": total, "wins": wins_d, "losses": total - wins_d,
+            "win_rate": wr, "learning_factor": round(factor, 2),
+        }
+
+    live_performance = {
+        "total": len(completed),
+        "wins": len(wins_live),
+        "losses": len(losses_live),
+        "pending": len(pending_live),
+        "win_rate": round(len(wins_live) / len(completed) * 100, 1) if completed else None,
+        "by_direction": by_dir_live,
+    }
+
+    return {
+        "symbol": sym,
+        "simulation": sim,
+        "live_predictions": {
+            "symbol": sym,
+            "predictions": live_preds[:50],
+            "performance": live_performance,
+        },
+    }
+
+
+async def _fetch_live_predictions(symbol: str) -> list:
+    """Load live prediction records from DB for adaptive learning input."""
+    import json as _json
+    import aiosqlite as _aiosqlite
+    from app.db.database import get_db
+
+    try:
+        async with get_db() as db:
+            db.row_factory = _aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM prediction_events WHERE symbol=? ORDER BY created_at DESC LIMIT 200",
+                (symbol,),
+            )
+            rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "direction": row["predicted_direction"],
+                "confidence": row["confidence"],
+                "entry_price": row["entry_price"],
+                "target_price": row["target_price"],
+                "stop_loss": row["stop_loss"],
+                "outcome_status": row["outcome_status"],
+                "exit_price": row["exit_price"],
+                "pnl_pct": row["pnl_pct"],
+                "rationale": _json.loads(row["rationale"] or "[]"),
+                "mistake_notes": _json.loads(row["mistake_notes"] or "[]"),
+            })
+        return result
+    except Exception:
+        return []
