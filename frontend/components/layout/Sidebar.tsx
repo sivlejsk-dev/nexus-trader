@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   BarChart2, MessageSquare, TrendingUp, Activity,
   BookOpen, Star, ChevronRight, Zap,
-  PanelLeftClose, PanelLeftOpen, Globe, BrainCircuit,
+  PanelLeftClose, PanelLeftOpen, Globe, BrainCircuit, FlaskConical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -19,6 +19,7 @@ const NAV = [
   { href: "/events",    label: "Events",     icon: Globe,         desc: "Market events" },
   { href: "/predictions", label: "Predictions", icon: BrainCircuit,  desc: "AI accuracy" },
   { href: "/learn",     label: "Learn",      icon: BookOpen,      desc: "Education" },
+  { href: "/test",       label: "API Tests",  icon: FlaskConical,  desc: "Live endpoint tests" },
 ];
 
 const STORAGE_KEY = "nexus_sidebar_collapsed";
