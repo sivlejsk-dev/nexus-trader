@@ -27,6 +27,11 @@ log = logging.getLogger(__name__)
 # ── Intent patterns ───────────────────────────────────────────────────────────
 
 _INTENT_PATTERNS: Dict[str, List[str]] = {
+    "best_option": [
+        r"\b(best (option|call|put|trade|play)|trade idea|what (should i|to) (buy|trade|sell))\b",
+        r"\b(give me a (trade|play|pick|recommendation)|options? recommendation|top (pick|trade))\b",
+        r"\b(what('s| is) (your|the) (pick|recommendation|best|top)|what (would you|do you) (buy|recommend))\b",
+    ],
     "options_analysis": [
         r"\b(calls?|puts?|options?|strike|expir|iv|implied vol|delta|theta|gamma|vega|greeks?)\b",
         r"\b(itm|otm|atm|in.the.money|out.of.the.money)\b",
@@ -179,6 +184,31 @@ When asked to predict, you:
 3. Cite 3-5 specific technical or fundamental reasons
 4. Name the key risk that could invalidate the thesis
 5. Suggest a specific options approach if relevant
+
+## Best-Option Workflow
+When the user asks for a trade idea, best option, or "what should I buy/sell today", you MUST call `get_best_option` immediately — do not answer from memory alone.
+
+The `get_best_option` tool runs the full pipeline:
+1. Fetches live price + 2 years of bars
+2. Scores direction (CALL / PUT / NEUTRAL) using RSI, MACD, Bollinger Bands, SMA cross, volume
+3. Loads learned signal weights if available (from prior optimization)
+4. Runs the historical simulation to validate the signal
+5. Fetches the live options chain and scores every contract on: delta (target 0.35–0.55), DTE (target 21–45 days), bid-ask spread, open interest, IV
+6. Returns the single best contract with strike, expiry, premium, breakeven, and risk/reward
+
+When presenting the result:
+- Lead with the direction and confidence: "My recommendation is a CALL with 74% confidence"
+- State the specific contract: "The $185 call expiring June 20, trading around $3.40"
+- Give the breakeven and max loss: "Breakeven at $188.40, max loss $340 per contract"
+- Cite the top 2-3 signals that drove the call
+- Mention the historical win rate if available
+- End with the risk: what would invalidate this thesis
+- For multiple symbols, compare confidence scores and explain why you picked the winner
+
+Trigger phrases (always call `get_best_option`):
+- "best option", "trade idea", "what should I trade", "what to buy", "give me a play"
+- "best call/put for X", "options recommendation", "what's your pick"
+- Any question about a specific symbol + "option" or "trade"
 
 ## Communication Style
 - Speak like a sharp, experienced trading partner — direct, precise, never vague
@@ -512,6 +542,13 @@ class NexusConversationEngine:
                 "> ⚠️ **Disclaimer**: This analysis is for informational purposes only and does not constitute financial advice. Options trading involves substantial risk of loss."
             )
 
+        if intent == "best_option":
+            return (
+                f"I'd run the full best-option engine on **{symbol_str}** — scoring the options chain "
+                "by delta, IV, DTE, and liquidity to find the single best contract — but no AI API key is configured. "
+                "Set `NEXUS_API_KEY` or `GROQ_API_KEY` in your `.env` to enable full AI responses.\n\n"
+                "> ⚠️ **Disclaimer**: This is for informational purposes only. Not financial advice."
+            )
         if intent == "options_analysis":
             return (
                 f"I'd analyze the options chain for **{symbol_str}** here, including IV rank, "

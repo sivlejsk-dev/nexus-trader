@@ -16,8 +16,10 @@ import {
   type PendingConfirmation,
   type SessionInsight,
   type ToolCall,
+  type BestOptionResult,
 } from "@/lib/api";
 import { cn, getSessionId } from "@/lib/utils";
+import BestOptionCard from "@/components/BestOptionCard";
 
 // ── Speech API types ──────────────────────────────────────────────────────────
 interface SREvent extends Event {
@@ -48,6 +50,7 @@ interface Msg {
   new_insights?: SessionInsight[];
   tool_log?: ToolCall[];
   intent?: string;
+  best_option?: BestOptionResult;
 }
 
 // ── TTS helper ────────────────────────────────────────────────────────────────
@@ -156,6 +159,7 @@ const TOOL_ICONS: Record<string, string> = {
   research_event:   "🌐",
   get_model_stats:  "📊",
   remember_finding: "💾",
+  get_best_option:  "🎯",
 };
 
 function ToolCallLog({ calls }: { calls: ToolCall[] }) {
@@ -222,8 +226,31 @@ function ToolCallLog({ calls }: { calls: ToolCall[] }) {
                   </div>
                 )}
 
+                {/* Best-option compact summary */}
+                {call.name === "get_best_option" && (() => {
+                  const r = call.result as any;
+                  const best = r?.best ?? r;
+                  if (!best?.symbol) return null;
+                  const dir = best.direction?.toUpperCase();
+                  const conf = best.confidence ? `${Math.round(best.confidence * 100)}%` : "";
+                  const contract = best.contract;
+                  return (
+                    <div className="text-[10px] space-y-0.5 pt-1">
+                      <div className="text-gray-400">
+                        <span className={dir === "CALL" ? "text-green-400 font-bold" : dir === "PUT" ? "text-red-400 font-bold" : "text-gray-400 font-bold"}>{dir}</span>
+                        {" "}{best.symbol} · {conf} confidence
+                      </div>
+                      {contract && (
+                        <div className="text-gray-600">
+                          Strike ${contract.strike} · {contract.expiry || contract.expiration_date} · Δ{contract.delta?.toFixed(2)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Generic result for other tools */}
-                {!isSearch && !isFetch && (
+                {!isSearch && !isFetch && call.name !== "get_best_option" && (
                   <div className="text-[10px] text-gray-600 font-mono leading-relaxed">
                     {JSON.stringify(call.result, null, 2).slice(0, 400)}
                   </div>
@@ -402,6 +429,16 @@ export function NexusVoice() {
         }
       }
 
+      // Extract best-option result from tool_log if present
+      let bestOption: BestOptionResult | undefined;
+      if (res.tool_log) {
+        const boCall = res.tool_log.find(t => t.name === "get_best_option");
+        if (boCall) {
+          const r = boCall.result as any;
+          bestOption = (r?.best ?? r) as BestOptionResult;
+        }
+      }
+
       const assistantMsg: Msg = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
@@ -414,13 +451,15 @@ export function NexusVoice() {
         new_insights: res.new_insights,
         tool_log: res.tool_log,
         intent: res.intent,
+        best_option: bestOption,
       };
       setMessages(prev => [...prev, assistantMsg]);
 
       if (!open) setUnread(n => n + 1);
 
-      // Speak: prefer voice_reasoning (prediction rationale), else response
-      const toSpeak = voiceMode && res.voice_reasoning ? res.voice_reasoning : res.response;
+      // Speak: best-option voice_script > voice_reasoning > response
+      const toSpeak = bestOption?.voice_script
+        ?? (voiceMode && res.voice_reasoning ? res.voice_reasoning : res.response);
       ttsSpeak(toSpeak, muted);
 
     } catch (err: any) {
@@ -649,6 +688,15 @@ export function NexusVoice() {
 
                         {/* Simulation card */}
                         {msg.simulation && <SimCard sim={msg.simulation} />}
+
+                        {/* Best-option card */}
+                        {msg.best_option && !msg.best_option.error && (
+                          <BestOptionCard
+                            result={msg.best_option}
+                            autoSpeak={false}
+                            className="mt-2"
+                          />
+                        )}
 
                         {/* New insights */}
                         {msg.new_insights && msg.new_insights.length > 0 && (

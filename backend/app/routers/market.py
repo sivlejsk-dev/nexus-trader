@@ -563,3 +563,72 @@ async def reset_weights(symbol: str):
     """Reset learned weights back to defaults for a symbol."""
     await signal_optimizer.reset(symbol.upper())
     return {"symbol": symbol.upper(), "reset": True}
+
+
+# ── Best-option engine ────────────────────────────────────────────────────────
+
+@router.get("/best-option/{symbol}")
+async def get_best_option_single(
+    symbol: str,
+    include_research: bool = Query(default=True, description="Fetch recent news for context"),
+):
+    """
+    Run the full best-option pipeline on a single symbol.
+
+    Returns the highest-scoring call or put contract with:
+    - Direction + confidence from the full signal stack
+    - Best contract: strike, expiry, premium, delta, DTE
+    - Risk/reward: breakeven, max loss, expected value
+    - Rationale bullets and a voice-ready script
+    - Historical simulation win rate for this direction
+    """
+    from app.services.best_option import get_best_option
+
+    sym = symbol.upper()
+    result = await get_best_option(sym, include_research=include_research)
+
+    if result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+
+    return result
+
+
+@router.post("/best-option")
+async def get_best_option_multi(
+    symbols: List[str] = Query(description="Ticker symbols to analyse, e.g. AAPL,TSLA,SPY"),
+    include_research: bool = Query(default=True),
+):
+    """
+    Run the best-option engine across multiple symbols concurrently.
+
+    Scores each symbol independently, then returns:
+    - `best`: the single highest-confidence recommendation across all symbols
+    - `all`: per-symbol results for comparison
+    """
+    import asyncio
+    from app.services.best_option import get_best_option
+
+    if not symbols:
+        raise HTTPException(status_code=422, detail="At least one symbol required")
+
+    syms = [s.upper() for s in symbols[:8]]  # cap at 8 concurrent
+
+    tasks = [get_best_option(s, include_research=include_research) for s in syms]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_results = []
+    for sym, r in zip(syms, results):
+        if isinstance(r, Exception):
+            all_results.append({"symbol": sym, "error": str(r)})
+        else:
+            all_results.append(r)
+
+    # Pick the highest-confidence non-neutral result
+    valid = [r for r in all_results if not r.get("error") and r.get("direction") != "neutral"]
+    best = max(valid, key=lambda r: r.get("confidence", 0)) if valid else (all_results[0] if all_results else {})
+
+    return {
+        "best": best,
+        "all": all_results,
+        "symbol_count": len(syms),
+    }

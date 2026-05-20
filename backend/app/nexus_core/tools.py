@@ -204,6 +204,42 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_best_option",
+            "description": (
+                "Run the full Nexus best-option engine on one or more symbols. "
+                "Analyses technicals, runs the historical simulation, scores the options chain "
+                "(delta, IV, DTE, liquidity), and returns the single best call or put to buy "
+                "right now — with strike, expiry, premium estimate, breakeven, risk/reward, "
+                "and a full spoken rationale. "
+                "Use this whenever the user asks: 'what's the best option to buy?', "
+                "'give me a trade idea', 'what should I trade today?', "
+                "'best call/put for X', or any variant."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbols": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of ticker symbols to analyse, e.g. ['AAPL', 'TSLA', 'SPY']. "
+                            "If the user mentions a single symbol, pass it as a one-element list. "
+                            "If no symbol is specified, use ['SPY', 'QQQ', 'AAPL'] as defaults."
+                        ),
+                    },
+                    "include_research": {
+                        "type": "boolean",
+                        "description": "Whether to fetch recent news for context. Default true.",
+                        "default": True,
+                    },
+                },
+                "required": ["symbols"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember_finding",
             "description": (
                 "Store an important research finding, insight, or learned fact to Nexus's "
@@ -344,6 +380,41 @@ async def dispatch_tool(
         elif name == "get_model_stats":
             result = await get_model_stats(args["symbol"].upper())
             label = f"📊 Model stats: {args['symbol'].upper()}"
+
+        elif name == "get_best_option":
+            from app.services.best_option import get_best_option
+            import asyncio
+            symbols = [s.upper() for s in args.get("symbols", ["SPY"])]
+            include_research = args.get("include_research", True)
+
+            # Run all symbols concurrently
+            tasks = [
+                get_best_option(sym, include_research=include_research, session_id=session_id)
+                for sym in symbols[:5]  # cap at 5 symbols
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            recs = []
+            for sym, r in zip(symbols, results):
+                if isinstance(r, Exception):
+                    recs.append({"symbol": sym, "error": str(r)})
+                else:
+                    recs.append(r)
+
+            # If multiple symbols, pick the one with highest confidence
+            valid = [r for r in recs if not r.get("error") and r.get("direction") != "neutral"]
+            if valid:
+                best = max(valid, key=lambda r: r.get("confidence", 0))
+            else:
+                best = recs[0] if recs else {"error": "No results"}
+
+            result = {
+                "best": best,
+                "all_symbols": recs if len(recs) > 1 else None,
+                "symbol_count": len(symbols),
+            }
+            sym_list = ", ".join(symbols)
+            label = f"🎯 Best option: {sym_list}"
 
         elif name == "remember_finding":
             finding_id = await research_memory_service.store_finding(

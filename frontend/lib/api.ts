@@ -431,6 +431,92 @@ export interface PredictionHistoryResponse {
   };
 }
 
+// ── Best Option ───────────────────────────────────────────────────────────────
+
+export interface BestOptionContract {
+  symbol: string;
+  type: "call" | "put";
+  strike: number;
+  expiry?: string;
+  expiration_date?: string;
+  days_to_expiry?: number;
+  dte?: number;
+  bid?: number;
+  ask?: number;
+  estimated_premium?: number;
+  delta?: number;
+  gamma?: number;
+  theta?: number;
+  vega?: number;
+  implied_volatility?: number;
+  iv?: number;
+  open_interest?: number;
+  volume?: number;
+  is_synthetic?: boolean;
+  note?: string;
+  _nexus_score?: number;
+}
+
+export interface BestOptionSignal {
+  name: string;
+  value: string;
+  signal: "bullish" | "bearish" | "neutral";
+  detail: string;
+}
+
+export interface BestOptionRiskReward {
+  premium: number;
+  cost_per_contract: number;
+  breakeven: number;
+  target_price: number;
+  max_loss: number;
+  expected_value: number;
+  risk_reward_ratio?: number;
+  dte: number;
+}
+
+export interface BestOptionResult {
+  symbol: string;
+  price: number;
+  direction: "call" | "put" | "neutral";
+  confidence: number;
+  direction_score: {
+    direction: string;
+    confidence: number;
+    bull_score: number;
+    bear_score: number;
+    edge: number;
+    signals: BestOptionSignal[];
+    rsi?: number;
+    macd?: number;
+    sma20?: number;
+    sma50?: number;
+    bb_pct_b?: number;
+    vol_ratio?: number;
+  };
+  simulation: {
+    win_rate?: number;
+    avg_pnl_pct?: number;
+    total_predictions?: number;
+    direction_stats?: { total: number; wins: number; win_rate?: number };
+  };
+  contract?: BestOptionContract;
+  risk_reward?: BestOptionRiskReward;
+  news_snippets: string[];
+  rationale: string[];
+  voice_script: string;
+  using_learned_weights: boolean;
+  chain_available: boolean;
+  generated_at: string;
+  error?: string;
+}
+
+export interface BestOptionMultiResult {
+  best: BestOptionResult;
+  all?: BestOptionResult[];
+  symbol_count: number;
+}
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -590,4 +676,16 @@ export const api = {
 
   optimizationHistory: (symbol: string) =>
     req<{ symbol: string; runs: Array<Record<string, unknown>> }>(`/market/optimize/${symbol}/history`),
+
+  // Best-option engine
+  bestOption: (symbol: string, includeResearch = true) =>
+    req<BestOptionResult>(
+      `/market/best-option/${symbol}?include_research=${includeResearch}`
+    ),
+
+  bestOptionMulti: (symbols: string[], includeResearch = true) =>
+    req<BestOptionMultiResult>(
+      `/market/best-option?${symbols.map(s => `symbols=${s}`).join("&")}&include_research=${includeResearch}`,
+      { method: "POST" }
+    ),
 };
