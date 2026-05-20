@@ -3,7 +3,7 @@ tasks:
     name: Install backend dependencies
     description: Create Python venv and install requirements.
     command: |
-      cd /workspaces/workspaces/nexus-trader/backend
+      cd /workspaces/nexus-trader/backend
       python -m venv .venv
       .venv/bin/pip install --quiet -r requirements.txt
     triggeredBy:
@@ -13,7 +13,7 @@ tasks:
     name: Install frontend dependencies
     description: Install Node.js packages for the Next.js frontend.
     command: |
-      cd /workspaces/workspaces/nexus-trader/frontend
+      cd /workspaces/nexus-trader/frontend
       npm install --silent
     triggeredBy:
       - postDevcontainerStart
@@ -24,7 +24,7 @@ services:
     description: FastAPI backend API server on port 8000.
     commands:
       start: |
-        cd /workspaces/workspaces/nexus-trader/backend
+        cd /workspaces/nexus-trader/backend
         .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       ready: |
         curl -sf http://localhost:8000/health
@@ -34,7 +34,7 @@ services:
     description: Next.js frontend on port 3000.
     commands:
       start: |
-        cd /workspaces/workspaces/nexus-trader/frontend
+        cd /workspaces/nexus-trader/frontend
         npm run dev
       ready: |
         curl -sf http://localhost:3000

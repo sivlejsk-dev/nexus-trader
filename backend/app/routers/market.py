@@ -165,3 +165,138 @@ async def get_full_analysis(
         )
 
     return result
+
+
+@router.get("/events/{symbol}")
+async def get_event_intelligence(symbol: str):
+    """
+    Fetch and classify real-world events (news, macro, geopolitical, social)
+    for a symbol, with Nexus call/put bias analysis and historical analogues.
+    """
+    intel = await event_intelligence_service.build_symbol_intelligence(symbol.upper(), fresh=True)
+    if isinstance(intel, Exception):
+        raise HTTPException(status_code=503, detail=str(intel))
+
+    # Enrich each event with a Nexus analysis string
+    events = intel.get("events", [])
+    for event in events:
+        category = event.get("category", "unknown")
+        direction = event.get("direction", "neutral")
+        option_bias = event.get("option_bias", "neutral")
+        title = event.get("title", "")
+        sentiment = event.get("sentiment_score", 0)
+
+        # Build a concise Nexus analysis
+        bias_text = {
+            "bullish": "This event leans bullish — calls may benefit if the move confirms.",
+            "bearish": "This event leans bearish — puts may benefit if the move confirms.",
+            "volatility": "This event could spike volatility in either direction — straddles or strangles may be worth considering.",
+            "neutral": "This event has mixed or unclear directional implications.",
+        }.get(option_bias, "Directional impact unclear.")
+
+        category_context = {
+            "earnings": "Earnings events historically cause the largest single-day moves.",
+            "macro": "Macro data (Fed, CPI, GDP) affects broad market direction and sector rotation.",
+            "geopolitical": "Geopolitical events can cause sharp, short-lived spikes in volatility.",
+            "regulatory": "Regulatory actions can be binary events — approval or rejection drives large moves.",
+            "product": "Product launches and recalls affect near-term revenue expectations.",
+            "analyst": "Analyst rating changes shift institutional positioning.",
+            "social_trend": "Social/viral trends can create short squeezes or momentum bursts.",
+            "options_flow": "Unusual options flow often precedes informed directional moves.",
+        }.get(category, "")
+
+        event["nexus_analysis"] = f"{bias_text} {category_context}".strip()
+
+    # Add source status
+    intel["source_status"] = event_intelligence_service.source_status()
+
+    return intel
+
+
+@router.get("/predictions/{symbol}")
+async def get_prediction_history(symbol: str):
+    """Full prediction history for a symbol with performance metrics."""
+    from app.db.database import get_db
+    import aiosqlite
+    import json
+
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT * FROM prediction_events
+            WHERE symbol = ?
+            ORDER BY created_at DESC
+            LIMIT 100
+            """,
+            (symbol.upper(),),
+        )
+        rows = await cursor.fetchall()
+
+    predictions = []
+    for row in rows:
+        predictions.append({
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "direction": row["predicted_direction"],
+            "confidence": row["confidence"],
+            "entry_price": row["entry_price"],
+            "target_price": row["target_price"],
+            "stop_loss": row["stop_loss"],
+            "outcome_status": row["outcome_status"],
+            "exit_price": row["exit_price"],
+            "pnl_pct": row["pnl_pct"],
+            "rationale": json.loads(row["rationale"] or "[]"),
+            "mistake_notes": json.loads(row["mistake_notes"] or "[]"),
+        })
+
+    # Compute performance
+    completed = [p for p in predictions if p["outcome_status"] in ("win", "loss", "flat")]
+    wins = [p for p in completed if p["outcome_status"] == "win"]
+    losses = [p for p in completed if p["outcome_status"] == "loss"]
+    pending = [p for p in predictions if p["outcome_status"] == "pending"]
+
+    by_direction: dict = {}
+    for direction in ("call", "put", "neutral"):
+        ds = [p for p in completed if p["direction"] == direction]
+        dw = [p for p in ds if p["outcome_status"] == "win"]
+        dl = [p for p in ds if p["outcome_status"] == "loss"]
+        total = len(ds)
+        wins_d = len(dw)
+        wr = round(wins_d / total * 100, 1) if total else None
+        # Learning factor
+        if total < 4:
+            factor = 1.0
+        else:
+            rate = wins_d / total
+            factor = 1.08 if rate >= 0.62 else (0.88 if rate <= 0.38 else 1.0)
+        by_direction[direction] = {
+            "total": total,
+            "wins": wins_d,
+            "losses": len(dl),
+            "win_rate": wr,
+            "learning_factor": round(factor, 2),
+        }
+
+    return {
+        "symbol": symbol.upper(),
+        "predictions": predictions,
+        "performance": {
+            "total": len(completed),
+            "wins": len(wins),
+            "losses": len(losses),
+            "pending": len(pending),
+            "win_rate": round(len(wins) / len(completed) * 100, 1) if completed else None,
+            "by_direction": by_direction,
+        },
+    }
+
+
+@router.post("/predictions/{symbol}/score")
+async def score_predictions(symbol: str):
+    """Force-score any pending predictions for a symbol against current price data."""
+    bars = await market_data_service.get_historical_ohlcv(symbol.upper(), years=2)
+    if not bars:
+        raise HTTPException(status_code=404, detail=f"No price data for {symbol}")
+    await adaptive_prediction_service._score_due_predictions(symbol.upper(), bars)
+    return {"scored": True, "symbol": symbol.upper()}

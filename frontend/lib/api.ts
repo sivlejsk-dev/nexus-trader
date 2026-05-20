@@ -228,6 +228,69 @@ export interface MarketProvidersResponse {
   active_fallback_order: string[];
 }
 
+// ── Event Intelligence ────────────────────────────────────────────────────────
+
+export interface EventIntelligenceResponse {
+  symbol: string;
+  events: Array<{
+    source: string;
+    source_event_id: string;
+    symbol: string;
+    event_time: string;
+    title: string;
+    summary?: string;
+    url?: string;
+    sentiment_score?: number;
+    virality_score?: number;
+    category?: string;
+    direction?: string;
+    option_bias?: string;
+    nexus_analysis?: string;
+    historical_analogues?: {
+      count: number;
+      call_win_rate?: number;
+      put_win_rate?: number;
+    };
+  }>;
+  composite?: {
+    bias: string;
+    confidence: number;
+    raw_scores?: Record<string, number>;
+    top_events?: string[];
+  };
+  source_status?: Array<{ name: string; configured: boolean }>;
+  disclaimer?: string;
+}
+
+export interface PredictionHistoryResponse {
+  symbol: string;
+  predictions: Array<{
+    id: string;
+    created_at: string;
+    direction: string;
+    confidence: number;
+    entry_price: number;
+    target_price?: number;
+    stop_loss?: number;
+    outcome_status: string;
+    exit_price?: number;
+    pnl_pct?: number;
+    rationale: string[];
+    mistake_notes?: string[];
+  }>;
+  performance: {
+    total: number;
+    wins: number;
+    losses: number;
+    pending: number;
+    win_rate?: number;
+    by_direction: Record<string, {
+      total: number; wins: number; losses: number;
+      win_rate?: number; learning_factor: number;
+    }>;
+  };
+}
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -307,4 +370,16 @@ export const api = {
     req(`/watchlist/${sessionId}`, { method: "POST", body: JSON.stringify({ symbol }) }),
   removeFromWatchlist: (sessionId: string, symbol: string) =>
     req(`/watchlist/${sessionId}/${symbol}`, { method: "DELETE" }),
+  // Event Intelligence
+  eventIntelligence: (symbol: string) =>
+    req<EventIntelligenceResponse>(`/market/events/${symbol}`),
+
+  // Prediction history
+  predictionHistory: (symbol: string) =>
+    req<PredictionHistoryResponse>(`/market/predictions/${symbol}`),
+
+  // Force score pending predictions
+  scorePredictions: (symbol: string) =>
+    req<{ scored: number }>(`/market/predictions/${symbol}/score`, { method: "POST" }),
+
 };
