@@ -58,6 +58,16 @@ async def get_market_providers():
             },
         ],
         "active_fallback_order": ["Polygon.io", "Alpha Vantage", "Yahoo Finance"],
+        "ai_status": {
+            "llm_configured": bool(settings.nexus_api_key or settings.groq_api_key),
+            "openai_configured": bool(settings.nexus_api_key),
+            "groq_configured": bool(settings.groq_api_key),
+            "active_model": (
+                settings.nexus_model if settings.nexus_api_key
+                else settings.groq_model if settings.groq_api_key
+                else None
+            ),
+        },
     }
 
 

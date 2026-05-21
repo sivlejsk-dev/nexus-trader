@@ -281,11 +281,18 @@ export interface SimulationPrediction {
   direction: "call" | "put" | "neutral";
   confidence: number;
   raw_confidence?: number;
+  regime?: string;
+  regime_mult?: number;
+  mtf_bias?: string;
+  mtf_confluence?: number;
+  mtf_aligned?: boolean;
+  streak_mult?: number;
   learning_factor?: number;
   actual_move_pct: number;
   pnl_pct: number;
   outcome: "win" | "loss";
   rationale: string[];
+  signal_attribution?: Record<string, string | null>;
   rsi?: number;
   sma20?: number;
   macd?: number;
@@ -310,6 +317,21 @@ export interface SignalStat {
   win_rate?: number | null;
 }
 
+export interface CalibrationBucket {
+  bucket: string;
+  predicted_confidence: number;
+  actual_win_rate: number;
+  total: number;
+  wins: number;
+}
+
+export interface RegimeStat {
+  total: number;
+  wins: number;
+  win_rate: number;
+  avg_pnl: number;
+}
+
 export interface SimulationResult {
   symbol: string;
   total_predictions: number;
@@ -324,7 +346,13 @@ export interface SimulationResult {
     avg_pnl?: number;
     learning_factor?: number;
   }>;
+  regime_stats?: Record<string, RegimeStat>;
+  mtf_stats?: {
+    aligned: { total: number; win_rate?: number };
+    unaligned: { total: number; win_rate?: number };
+  };
   signal_stats?: Record<string, SignalStat>;
+  calibration?: CalibrationBucket[];
   learning_factors?: Record<string, number>;
   weights_used?: Record<string, number>;
   using_learned_weights?: boolean;

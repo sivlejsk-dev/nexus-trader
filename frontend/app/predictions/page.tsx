@@ -9,8 +9,12 @@ import { useState, useCallback } from "react";
 import {
   BrainCircuit, RefreshCw, TrendingUp, TrendingDown, Minus,
   AlertTriangle, CheckCircle, Clock, Target, ChevronDown, ChevronUp,
-  BarChart2, Zap,
+  BarChart2, Zap, Activity, Flame, TrendingUp as StreakIcon,
 } from "lucide-react";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Cell,
+} from "recharts";
 import { api, type PredictionHistoryResponse } from "@/lib/api";
 import { cn, fmtPrice } from "@/lib/utils";
 
@@ -58,6 +62,107 @@ function ConfidenceBar({ value }: { value: number }) {
         <div className={cn("h-full rounded-full", color)} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-[10px] font-mono text-gray-400 w-8 text-right">{pct}%</span>
+    </div>
+  );
+}
+
+// ── Streak banner ─────────────────────────────────────────────────────────────
+
+function StreakBanner({ perf }: { perf: any }) {
+  const streak = perf.current_streak;
+  if (!streak || streak.length < 2) return null;
+  const isWin = streak.type === "win";
+  return (
+    <div className={cn(
+      "flex items-center gap-3 rounded-xl border px-4 py-3",
+      isWin ? "bg-green-900/20 border-green-800/30" : "bg-red-900/20 border-red-800/30"
+    )}>
+      <Flame size={18} className={isWin ? "text-green-400" : "text-red-400"} />
+      <div>
+        <div className={cn("text-sm font-bold", isWin ? "text-green-400" : "text-red-400")}>
+          {streak.length}-prediction {streak.type} streak on {streak.direction}s
+        </div>
+        <div className="text-[10px] text-gray-500 mt-0.5">
+          {isWin
+            ? "Model is hot — confidence is being nudged up for this direction."
+            : "Model is struggling — confidence is being reduced for this direction."}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Confidence calibration chart ──────────────────────────────────────────────
+
+function ConfidenceCalibration({ perf }: { perf: any }) {
+  const bands = perf.confidence_analysis;
+  if (!bands || bands.length === 0) return null;
+  return (
+    <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Target size={13} className="text-orange-400" />
+        <span className="text-xs font-semibold text-gray-400">Confidence Calibration</span>
+        <span className="text-[10px] text-gray-600 ml-auto">Predicted vs actual win rate</span>
+      </div>
+      <div className="space-y-2">
+        {bands.map((band: any, i: number) => (
+          <div key={i} className="flex items-center gap-3">
+            <span className="text-[10px] text-gray-500 w-14 flex-shrink-0">{band.band}</span>
+            <div className="flex-1 relative h-5 bg-[#1f2937] rounded overflow-hidden">
+              <div
+                className={cn("h-full rounded transition-all",
+                  band.actual_win_rate >= 60 ? "bg-green-600/70" :
+                  band.actual_win_rate >= 45 ? "bg-yellow-600/70" : "bg-red-600/70")}
+                style={{ width: `${band.actual_win_rate}%` }}
+              />
+              <span className="absolute inset-0 flex items-center px-2 text-[10px] font-mono text-white">
+                {band.actual_win_rate}% actual
+              </span>
+            </div>
+            <span className="text-[10px] text-gray-600 w-12 text-right">{band.total} trades</span>
+            {band.calibrated
+              ? <CheckCircle size={11} className="text-green-500 flex-shrink-0" />
+              : <AlertTriangle size={11} className="text-yellow-500 flex-shrink-0" />}
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 text-[10px] text-gray-600">
+        ✓ = well-calibrated (actual win rate close to predicted confidence)
+      </div>
+    </div>
+  );
+}
+
+// ── P&L by direction bar chart ────────────────────────────────────────────────
+
+function PnLByDirection({ perf }: { perf: any }) {
+  const pnlMap = perf.avg_pnl_by_direction;
+  if (!pnlMap) return null;
+  const data = Object.entries(pnlMap)
+    .filter(([d]) => d !== "neutral")
+    .map(([dir, pnl]) => ({ dir: dir.toUpperCase(), pnl: pnl as number }));
+  if (data.length === 0) return null;
+  return (
+    <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Activity size={13} className="text-blue-400" />
+        <span className="text-xs font-semibold text-gray-400">Avg P&L by Direction</span>
+      </div>
+      <ResponsiveContainer width="100%" height={100}>
+        <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1a2235" vertical={false} />
+          <XAxis dataKey="dir" tick={{ fill: "#6b7280", fontSize: 10 }} tickLine={false} axisLine={false} />
+          <YAxis tick={{ fill: "#6b7280", fontSize: 9 }} tickLine={false} axisLine={false} width={36}
+            tickFormatter={(v) => `${v > 0 ? "+" : ""}${v}%`} />
+          <Tooltip contentStyle={{ background: "#1a2235", border: "1px solid #374151", borderRadius: 8, fontSize: 11 }}
+            formatter={(v: number) => [`${v >= 0 ? "+" : ""}${v.toFixed(2)}%`, "Avg P&L"]} />
+          <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+            {data.map((d, i) => (
+              <Cell key={i} fill={d.pnl >= 0 ? "#22c55e" : "#ef4444"} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }
@@ -297,8 +402,15 @@ export default function PredictionsPage() {
 
         {data && (
           <>
+            <StreakBanner perf={data.performance} />
             <PerformanceSummary perf={data.performance} />
-            <DirectionBreakdown byDir={data.performance.by_direction} />
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <DirectionBreakdown byDir={data.performance.by_direction} />
+              <PnLByDirection perf={data.performance} />
+            </div>
+
+            <ConfidenceCalibration perf={data.performance} />
 
             {data.predictions.length > 0 ? (
               <div className="space-y-2">

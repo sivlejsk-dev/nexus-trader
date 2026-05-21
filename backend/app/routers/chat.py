@@ -121,11 +121,23 @@ async def chat(req: ChatRequest):
         intent=metadata.get("intent", "general"),
     )
 
-    # ── Voice reasoning: build spoken rationale if prediction present ──
+    # ── Voice reasoning: always build a spoken summary when there's structured data ──
     voice_reasoning = None
-    if req.voice_mode and metadata.get("prediction_history"):
+    if metadata.get("prediction_history"):
         pred = metadata["prediction_history"]
         voice_reasoning = _build_voice_reasoning(pred, symbol)
+    elif metadata.get("simulation"):
+        sim = metadata["simulation"]
+        voice_reasoning = _build_simulation_voice(sim)
+    else:
+        # Strip markdown from the response so TTS reads it cleanly
+        import re
+        clean = re.sub(r'\[\[NEXUS_CMD:[^\]]*\]\]', '', response_text)
+        clean = re.sub(r'```[\s\S]*?```', '', clean)
+        clean = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', clean)
+        clean = re.sub(r'[*_`#>]', '', clean)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        voice_reasoning = clean
 
     return ChatResponse(
         response=response_text,
@@ -146,6 +158,45 @@ async def chat(req: ChatRequest):
     )
 
 
+def _build_simulation_voice(sim: Dict[str, Any]) -> str:
+    """Build a concise spoken summary of a simulation result."""
+    symbol = sim.get("symbol", "this symbol")
+    wr = sim.get("win_rate")
+    total = sim.get("total_predictions", 0)
+    avg_pnl = sim.get("avg_pnl_pct")
+    horizon = sim.get("horizon_days", 20)
+    by_dir = sim.get("by_direction", {})
+    call_wr = (by_dir.get("call") or {}).get("win_rate")
+    put_wr = (by_dir.get("put") or {}).get("win_rate")
+    regime_stats = sim.get("regime_stats", {})
+
+    parts = []
+    parts.append(f"I ran a historical simulation on {symbol} over {total} prediction windows using a {horizon}-day horizon.")
+
+    if wr is not None:
+        tone = "strong" if wr >= 60 else "decent" if wr >= 52 else "below average"
+        parts.append(f"The overall win rate was {wr} percent, which is {tone}.")
+
+    if call_wr is not None and put_wr is not None:
+        better = "calls" if call_wr >= put_wr else "puts"
+        parts.append(f"Calls hit {call_wr} percent and puts hit {put_wr} percent, so {better} performed better historically.")
+
+    if avg_pnl is not None:
+        direction_word = "positive" if avg_pnl >= 0 else "negative"
+        parts.append(f"The average P and L per trade was {avg_pnl:+.1f} percent, which is {direction_word}.")
+
+    # Best regime
+    if regime_stats:
+        best_regime = max(regime_stats.items(), key=lambda x: x[1].get("win_rate", 0), default=None)
+        if best_regime:
+            rname = best_regime[0].replace("_", " ")
+            rwr = best_regime[1].get("win_rate", 0)
+            parts.append(f"The model performed best in {rname} markets with a {rwr} percent win rate.")
+
+    parts.append("Keep in mind this is a backtest and past results do not guarantee future performance.")
+    return " ".join(parts)
+
+
 def _build_voice_reasoning(pred_data: Dict[str, Any], symbol: Optional[str]) -> str:
     """Build a concise spoken summary of the current prediction rationale."""
     pred = pred_data.get("prediction", {})
@@ -158,21 +209,44 @@ def _build_voice_reasoning(pred_data: Dict[str, Any], symbol: Optional[str]) -> 
     parts = []
     sym = symbol or pred_data.get("symbol", "this symbol")
     dir_word = {"call": "bullish", "put": "bearish", "neutral": "neutral"}.get(direction, direction)
-    parts.append(f"My current thesis on {sym} is {dir_word}, with {int(confidence * 100)} percent confidence.")
+    conf_pct = int(confidence * 100)
+    parts.append(f"My current thesis on {sym} is {dir_word}, with {conf_pct} percent confidence.")
 
     if rationale:
         parts.append("The key signals are: " + ". ".join(rationale[:3]) + ".")
 
+    # Target and stop
+    target = pred.get("target_price")
+    stop = pred.get("stop_loss")
+    entry = pred.get("entry_price")
+    if target and entry:
+        parts.append(f"My target is {target:.2f} from the current price of {entry:.2f}.")
+    if stop:
+        parts.append(f"I would stop out below {stop:.2f}.")
+
     if wr is not None:
-        parts.append(f"My recent track record on {sym} is {wr} percent win rate.")
+        tone = "solid" if wr >= 60 else "moderate" if wr >= 50 else "below average"
+        parts.append(f"My recent track record on {sym} is {wr} percent win rate, which is {tone}.")
+
+    # Streak
+    streak = review.get("current_streak", {})
+    if streak and streak.get("length", 0) >= 3:
+        stype = streak.get("type", "")
+        slen = streak.get("length", 0)
+        sdir = streak.get("direction", "")
+        if stype == "win":
+            parts.append(f"I am on a {slen}-prediction win streak on {sdir}s, so momentum is in my favor.")
+        elif stype == "loss":
+            parts.append(f"I am on a {slen}-prediction loss streak on {sdir}s, so treat this with extra caution.")
 
     adj = pred.get("learning_adjustment", {})
-    factor = adj.get("factor", 1.0)
-    if factor > 1.0:
-        parts.append("Recent wins have nudged my confidence up.")
-    elif factor < 1.0:
-        parts.append("Recent losses have reduced my confidence on this direction.")
+    combined = adj.get("combined_factor", adj.get("factor", 1.0))
+    if combined > 1.05:
+        parts.append("My learning system has boosted confidence based on recent performance.")
+    elif combined < 0.95:
+        parts.append("My learning system has reduced confidence due to recent underperformance.")
 
+    parts.append("This is not financial advice. Always manage your risk.")
     return " ".join(parts)
 
 

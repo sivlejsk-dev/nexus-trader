@@ -255,6 +255,8 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>(() => getSessionId());
   const [activeSymbol, setActiveSymbol] = useState<string | null>(null);
+  const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
+  const [activeModel, setActiveModel] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState(false);
   const [muted, setMuted] = useState(false);
   const [listening, setListening] = useState(false);
@@ -296,6 +298,17 @@ export default function ChatPage() {
   useEffect(() => { loadSessionHistory(sessionId); }, [sessionId, loadSessionHistory]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
+  // Check AI configuration status
+  useEffect(() => {
+    api.providers().then((res: any) => {
+      const ai = res.ai_status;
+      if (ai) {
+        setAiConfigured(ai.llm_configured);
+        setActiveModel(ai.active_model ?? null);
+      }
+    }).catch(() => {});
+  }, []);
+
   // Load memory-based suggestions on mount
   useEffect(() => {
     api.memorySummary().then((mem) => {
@@ -311,14 +324,29 @@ export default function ChatPage() {
     }).catch(() => {});
   }, []);
 
-  // TTS helper
+  // TTS helper — always speaks unless muted
   const speak = useCallback((text: string) => {
     if (muted || typeof window === "undefined" || !window.speechSynthesis) return;
     window.speechSynthesis.cancel();
-    const clean = text.replace(/```[\s\S]*?```/g, "").replace(/[#*_`>[\]()]/g, "").replace(/\s+/g, " ").trim().slice(0, 500);
-    const utt = new SpeechSynthesisUtterance(clean);
-    utt.rate = 1.0; utt.pitch = 0.95;
-    window.speechSynthesis.speak(utt);
+    const clean = text
+      .replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "")   // strip app commands
+      .replace(/```[\s\S]*?```/g, "")              // strip code blocks
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")     // markdown links → text
+      .replace(/[#*_`>]/g, "")                     // strip markdown symbols
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!clean) return;
+    // Split into sentences and queue as separate utterances for natural pacing
+    const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+    sentences.forEach((sentence, i) => {
+      const utt = new SpeechSynthesisUtterance(sentence.trim());
+      utt.rate = 1.0;
+      utt.pitch = 0.95;
+      utt.volume = 1.0;
+      // Small pause between sentences
+      if (i > 0) utt.rate = 1.0;
+      window.speechSynthesis.speak(utt);
+    });
   }, [muted]);
 
   const send = useCallback(async (text: string) => {
@@ -337,7 +365,9 @@ export default function ChatPage() {
       }]);
       if (res.active_symbol) setActiveSymbol(res.active_symbol);
       else if (res.symbols && res.symbols.length > 0) setActiveSymbol(res.symbols[0]);
-      if (voiceMode) speak(res.response);
+      // Always speak — prefer voice_reasoning (concise spoken summary) over full response
+      const toSpeak = res.voice_reasoning || res.response;
+      speak(toSpeak);
       loadSessions();
     } catch (e: any) {
       setMessages((prev) => [...prev, {
@@ -486,16 +516,20 @@ export default function ChatPage() {
             </button>
           )}
           {/* Voice controls */}
+          <button onClick={() => setMuted((m) => !m)}
+            className={cn("flex items-center gap-1.5 text-[10px] px-2.5 py-1.5 rounded-lg border transition-colors font-medium",
+              muted
+                ? "border-[#374151] text-gray-600 hover:text-gray-300 hover:border-gray-500"
+                : "bg-blue-600/20 border-blue-600/40 text-blue-400 hover:bg-blue-600/30")}
+            title={muted ? "Click to unmute Nexus voice" : "Nexus speaks all responses — click to mute"}>
+            {muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
+            <span>{muted ? "Muted" : "Speaking"}</span>
+          </button>
           <button onClick={() => setVoiceMode((v) => !v)}
             className={cn("text-[10px] px-2 py-1 rounded-lg border transition-colors font-medium",
-              voiceMode ? "bg-blue-600/20 border-blue-600/40 text-blue-400" : "border-[#374151] text-gray-600 hover:text-gray-300")}
-            title="Voice mode: shorter spoken responses">
-            Voice
-          </button>
-          <button onClick={() => setMuted((m) => !m)}
-            className={cn("p-1.5 rounded-lg transition-colors", muted ? "text-gray-600" : "text-gray-400 hover:text-white")}
-            title={muted ? "Unmute" : "Mute TTS"}>
-            {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+              voiceMode ? "bg-cyan-600/20 border-cyan-600/40 text-cyan-400" : "border-[#374151] text-gray-600 hover:text-gray-300")}
+            title="Voice mode: Nexus gives shorter, spoken-first responses">
+            {voiceMode ? "Voice On" : "Voice Off"}
           </button>
           {voiceAvailable && (
             <button onClick={toggleListen}
@@ -615,6 +649,41 @@ export default function ChatPage() {
           )}
           <div ref={bottomRef} />
         </div>
+
+        {/* AI setup banner — shown when no LLM key is configured */}
+        {aiConfigured === false && (
+          <div className="mx-5 mb-2 flex items-start gap-3 bg-yellow-900/10 border border-yellow-800/30 rounded-xl px-4 py-3">
+            <AlertTriangle size={14} className="text-yellow-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-semibold text-yellow-400 mb-1">AI responses are limited — no API key configured</div>
+              <p className="text-[11px] text-gray-400 leading-relaxed">
+                Add one of these to <code className="text-yellow-300 bg-yellow-900/30 px-1 rounded">backend/.env</code>, then restart the backend:
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-2">
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <code className="text-green-300 bg-[#1f2937] px-2 py-0.5 rounded font-mono">GROQ_API_KEY=gsk_...</code>
+                  <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer"
+                    className="text-blue-400 hover:text-blue-300 flex items-center gap-0.5">
+                    <ExternalLink size={9} /> Free
+                  </a>
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <code className="text-green-300 bg-[#1f2937] px-2 py-0.5 rounded font-mono">NEXUS_API_KEY=sk-...</code>
+                  <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"
+                    className="text-blue-400 hover:text-blue-300 flex items-center gap-0.5">
+                    <ExternalLink size={9} /> OpenAI
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {aiConfigured === true && activeModel && (
+          <div className="mx-5 mb-1 flex items-center gap-1.5 text-[10px] text-green-600">
+            <BrainCircuit size={10} /> {activeModel} active
+          </div>
+        )}
 
         <div className="px-5 py-1.5 flex items-center gap-1.5 text-[10px] text-gray-600 border-t border-[#1f2937]">
           <AlertTriangle size={10} /> Not financial advice. Options trading involves substantial risk of loss.

@@ -43,14 +43,16 @@ _INTENT_PATTERNS: Dict[str, List[str]] = {
         r"\b(earnings|revenue|pe ratio|market cap|sector)\b",
     ],
     "simulate": [
-        r"\b(simulat|back.?test|replay|historical(ly)?|how did .* do|what happened|from \d{4}|between \d{4})\b",
-        r"\b(run (a |the )?sim|test (this |the )?strategy|past (data|performance|results?))\b",
+        r"\bsimulat\w*",
+        r"\b(back.?test\w*|replay|historical(ly)?|how did .* do|what happened|from \d{4}|between \d{4})\b",
+        r"\b(run (a |the )?sim\w*|test (this |the )?strategy|past (data|performance|results?))\b",
         r"\b(\d{4}\s+to\s+\d{4}|\d{4}\s*[-–]\s*\d{4})\b",
     ],
     "predict": [
-        r"\b(predict|forecast|what (will|would)|where (is|will)|price target|next (week|month|quarter))\b",
+        r"\b(predict\w*|forecast\w*|what (will|would)|where (is|will)|price target|next (week|month|quarter))\b",
         r"\b(should i (buy|sell)|make a (call|prediction)|your (call|take|view|opinion))\b",
         r"\b(bull(ish)?|bear(ish)?)\s+(case|thesis|outlook)\b",
+        r"\bgive me (a |your )?(prediction|call|thesis|outlook)\b",
     ],
     "reflect": [
         r"\b(how (accurate|good|well)|your (track record|accuracy|performance|history))\b",
@@ -627,7 +629,7 @@ class NexusConversationEngine:
                     )
                     triggered_actions.append(f"simulation:{symbol}:{start_y}-{end_y}")
             except Exception as e:
-                log.warning("nexus_trader.auto_simulate_failed", error=str(e))
+                log.warning("%s: %s", "nexus_trader.auto_simulate_failed", str(e))
 
         if symbol and intent in ("reflect", "predict"):
             try:
@@ -682,7 +684,7 @@ class NexusConversationEngine:
                 }
                 triggered_actions.append(f"reflection:{symbol}")
             except Exception as e:
-                log.warning("nexus_trader.auto_reflect_failed", error=str(e))
+                log.warning("%s: %s", "nexus_trader.auto_reflect_failed", str(e))
 
         # For event analysis, fetch world events for recent period
         if intent == "event_analysis" and not world_events_context:
@@ -696,7 +698,7 @@ class NexusConversationEngine:
                     cy = datetime.datetime.utcnow().year
                     world_events_context = get_events_for_range(f"{cy-3}-01-01", f"{cy}-12-31")
             except Exception as e:
-                log.warning("nexus_trader.auto_events_failed", error=str(e))
+                log.warning("%s: %s", "nexus_trader.auto_events_failed", str(e))
 
         # ── Build messages and call LLM ──────────────────────────────────────
         messages = await self._build_messages(
@@ -737,11 +739,11 @@ class NexusConversationEngine:
                     session_id=session_id,
                 )
         except Exception as exc:
-            log.warning("nexus_trader.llm_primary_failed", error=str(exc))
+            log.warning("%s: %s", "nexus_trader.llm_primary_failed", str(exc))
             try:
                 response = await self._call_llm(messages, use_groq=True)
             except Exception as exc2:
-                log.error("nexus_trader.llm_all_failed", error=str(exc2))
+                log.error("%s: %s", "nexus_trader.llm_all_failed", str(exc2))
                 response = self._fallback_response(user_message, market_context)
 
         # Persist both turns

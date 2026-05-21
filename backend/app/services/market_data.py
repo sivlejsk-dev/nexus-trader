@@ -517,16 +517,16 @@ class MarketDataService:
             try:
                 return await self.polygon.get_snapshot(symbol)
             except Exception as e:
-                log.warning("polygon_snapshot_failed", symbol=symbol, error=str(e))
+                log.warning("polygon_snapshot_failed symbol=%s error=%s", symbol, str(e))
         if settings.alpha_vantage_api_key:
             try:
                 return await self.alpha_vantage.get_quote(symbol)
             except Exception as e:
-                log.warning("alpha_vantage_quote_failed", symbol=symbol, error=str(e))
+                log.warning("alpha_vantage_quote_failed symbol=%s error=%s", symbol, str(e))
         try:
             return await self.yahoo.get_quote(symbol)
         except Exception as e:
-            log.warning("yahoo_quote_failed", symbol=symbol, error=str(e))
+            log.warning("yahoo_quote_failed symbol=%s error=%s", symbol, str(e))
         return {"symbol": symbol.upper(), "price": 0, "error": "No market data provider configured or reachable"}
 
     async def get_historical_ohlcv(
@@ -543,7 +543,7 @@ class MarketDataService:
             try:
                 return await self.polygon.get_ohlcv(symbol, from_date, to_date, timespan)
             except Exception as e:
-                log.warning("polygon_ohlcv_failed", symbol=symbol, error=str(e))
+                log.warning("polygon_ohlcv_failed symbol=%s error=%s", symbol, str(e))
 
         if settings.alpha_vantage_api_key:
             try:
@@ -551,12 +551,12 @@ class MarketDataService:
                 cutoff = from_date
                 return [b for b in bars if b["date"] >= cutoff]
             except Exception as e:
-                log.warning("alpha_vantage_ohlcv_failed", symbol=symbol, error=str(e))
+                log.warning("alpha_vantage_ohlcv_failed symbol=%s error=%s", symbol, str(e))
 
         try:
             return await self.yahoo.get_ohlcv(symbol, years=years)
         except Exception as e:
-            log.warning("yahoo_ohlcv_failed", symbol=symbol, error=str(e))
+            log.warning("yahoo_ohlcv_failed symbol=%s error=%s", symbol, str(e))
 
         return []
 
@@ -585,7 +585,7 @@ class MarketDataService:
                 if not isinstance(sma200, Exception):
                     technicals["sma_200"] = sma200
             except Exception as e:
-                log.warning("technicals_fetch_failed", symbol=symbol, error=str(e))
+                log.warning("technicals_fetch_failed symbol=%s error=%s", symbol, str(e))
 
         if not {"rsi", "macd", "sma_50", "sma_200"}.issubset(technicals):
             try:
@@ -594,7 +594,7 @@ class MarketDataService:
                 for key, value in local.items():
                     technicals.setdefault(key, value)
             except Exception as e:
-                log.warning("local_technicals_failed", symbol=symbol, error=str(e))
+                log.warning("local_technicals_failed symbol=%s error=%s", symbol, str(e))
 
         return technicals
 
@@ -610,14 +610,14 @@ class MarketDataService:
                     symbol, expiration_date, option_type
                 )
             except Exception as e:
-                log.warning("polygon_options_chain_failed", symbol=symbol, error=str(e))
+                log.warning("polygon_options_chain_failed symbol=%s error=%s", symbol, str(e))
         if settings.tradier_api_key:
             try:
                 return await self.tradier.get_options_chain(
                     symbol, expiration_date, option_type
                 )
             except Exception as e:
-                log.warning("tradier_options_chain_failed", symbol=symbol, error=str(e))
+                log.warning("tradier_options_chain_failed symbol=%s error=%s", symbol, str(e))
         return []
 
     async def get_unusual_options_activity(self, symbol: str) -> List[Dict[str, Any]]:
@@ -625,7 +625,7 @@ class MarketDataService:
             try:
                 return await self.polygon.get_unusual_options_activity(symbol)
             except Exception as e:
-                log.warning("polygon_unusual_options_failed", symbol=symbol, error=str(e))
+                log.warning("polygon_unusual_options_failed symbol=%s error=%s", symbol, str(e))
         return []
 
     async def get_full_market_context(self, symbol: str) -> Dict[str, Any]:

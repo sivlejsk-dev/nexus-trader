@@ -171,10 +171,11 @@ def _score_contract(
     direction: str,
     price: float,
     confidence: float,
+    chain_ivs: Optional[List[float]] = None,
 ) -> float:
     """
     Score an options contract for suitability. Higher = better.
-    Factors: delta alignment, IV rank, bid-ask spread, open interest, DTE.
+    Factors: delta alignment, IV percentile, bid-ask spread, open interest, DTE.
     """
     score = 0.0
 
@@ -187,9 +188,12 @@ def _score_contract(
     dte = contract.get("days_to_expiry") or contract.get("dte") or 30
 
     # Delta: prefer 0.35–0.55 (near ATM but not too far OTM)
-    if 0.30 <= delta <= 0.60:
+    # Higher confidence → can go slightly higher delta (more conviction)
+    delta_lo = 0.28 if confidence < 0.60 else 0.35
+    delta_hi = 0.60 if confidence < 0.70 else 0.65
+    if delta_lo <= delta <= delta_hi:
         score += 30.0
-    elif 0.20 <= delta < 0.30 or 0.60 < delta <= 0.70:
+    elif 0.20 <= delta < delta_lo or delta_hi < delta <= 0.75:
         score += 15.0
     elif delta < 0.15:
         score -= 20.0  # too far OTM — lottery ticket
@@ -227,11 +231,24 @@ def _score_contract(
     elif volume > 100:
         score += 5.0
 
-    # IV: prefer moderate IV (not too high = expensive, not too low = no move)
-    if 0.20 <= iv <= 0.50:
-        score += 10.0
-    elif iv > 0.80:
-        score -= 10.0  # very expensive
+    # IV percentile: compare this contract's IV to the chain's IV distribution
+    # Prefer buying when IV is in the lower 40th percentile (cheaper options)
+    if chain_ivs and len(chain_ivs) >= 5 and iv > 0:
+        sorted_ivs = sorted(chain_ivs)
+        rank = sum(1 for x in sorted_ivs if x <= iv) / len(sorted_ivs)
+        contract["iv_percentile"] = round(rank * 100, 1)
+        if rank < 0.30:
+            score += 15.0   # cheap relative to chain — good to buy
+        elif rank < 0.50:
+            score += 8.0
+        elif rank > 0.80:
+            score -= 12.0   # expensive — high IV crush risk
+    else:
+        # Fallback: absolute IV check
+        if 0.20 <= iv <= 0.50:
+            score += 10.0
+        elif iv > 0.80:
+            score -= 10.0
 
     # Confidence bonus: higher confidence → prefer slightly higher delta
     if confidence >= 0.70 and 0.45 <= delta <= 0.65:
@@ -256,10 +273,17 @@ def _pick_best_strike(
     if not contracts:
         contracts = chain  # fallback: use all
 
+    # Compute chain-wide IV distribution for percentile scoring
+    chain_ivs = [
+        float(c.get("implied_volatility") or c.get("iv") or 0)
+        for c in contracts
+        if (c.get("implied_volatility") or c.get("iv") or 0) > 0
+    ]
+
     # Score each
     scored = []
     for c in contracts:
-        s = _score_contract(c, direction, price, confidence)
+        s = _score_contract(c, direction, price, confidence, chain_ivs=chain_ivs)
         scored.append((s, c))
 
     if not scored:
@@ -268,6 +292,8 @@ def _pick_best_strike(
     scored.sort(key=lambda x: x[0], reverse=True)
     best_score, best = scored[0]
     best["_nexus_score"] = best_score
+    # Add rank context
+    best["_rank"] = f"1 of {len(scored)} {opt_type}s evaluated"
     return best
 
 

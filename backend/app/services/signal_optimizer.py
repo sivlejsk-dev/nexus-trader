@@ -50,22 +50,64 @@ WEIGHT_BOUNDS: Dict[str, Tuple[float, float]] = {
     "edge_threshold": (0.2, 1.5),
 }
 
-# Fitness: weighted combination of win rate and avg P&L
-# Penalise solutions with too few non-neutral trades (< 20% of total)
+# Fitness: multi-objective — win rate, avg P&L, directional balance, calibration
 def _fitness(result: Dict[str, Any]) -> float:
     total = result.get("total_predictions", 0)
     completed = result.get("wins", 0) + result.get("losses", 0)
     if total == 0 or completed < 10:
         return 0.0
+
     # Penalise if too many neutrals (model is being too conservative)
     neutral_rate = (total - completed) / total
     if neutral_rate > 0.80:
         return 0.0
+
     wr = result.get("win_rate") or 0.0
     avg_pnl = result.get("avg_pnl_pct") or 0.0
-    # Composite: 70% win rate + 30% avg P&L (normalised to 0-100 scale)
+
+    # Directional balance: reward models that work for both calls AND puts
+    by_dir = result.get("by_direction", {})
+    call_wr = (by_dir.get("call") or {}).get("win_rate") or 0.0
+    put_wr  = (by_dir.get("put")  or {}).get("win_rate") or 0.0
+    call_n  = (by_dir.get("call") or {}).get("total", 0)
+    put_n   = (by_dir.get("put")  or {}).get("total", 0)
+    # Penalise if one direction has < 5 trades (not enough to trust)
+    if call_n < 5 or put_n < 5:
+        balance_score = 0.0
+    else:
+        # Reward when both directions are above 50%
+        balance_score = min(call_wr, put_wr)
+
+    # Calibration bonus: reward when high-confidence predictions win more
+    calibration = result.get("calibration", [])
+    cal_bonus = 0.0
+    if len(calibration) >= 2:
+        # Check if win rate increases with confidence buckets
+        rates = [b["actual_win_rate"] for b in calibration]
+        if rates == sorted(rates):  # monotonically increasing
+            cal_bonus = 3.0
+
+    # P&L score normalised to 0-100
     pnl_score = min(100.0, max(0.0, avg_pnl * 10 + 50))
-    return 0.70 * wr + 0.30 * pnl_score
+
+    # Composite: 55% win rate + 20% P&L + 20% balance + 5% calibration
+    return 0.55 * wr + 0.20 * pnl_score + 0.20 * balance_score + cal_bonus
+
+
+def _diversity_penalty(candidate: Dict[str, float], population: List[Dict[str, float]],
+                        threshold: float = 0.05) -> float:
+    """
+    Return a small penalty if this candidate is too similar to existing population members.
+    Encourages exploration of diverse weight configurations.
+    """
+    if not population:
+        return 0.0
+    keys = list(candidate.keys())
+    for member in population:
+        dist = sum(abs(candidate.get(k, 0) - member.get(k, 0)) for k in keys) / len(keys)
+        if dist < threshold:
+            return -2.0  # penalty for near-duplicate
+    return 0.0
 
 
 def _clamp(val: float, key: str) -> float:
@@ -149,15 +191,19 @@ async def optimize_weights(
 
     no_improve_streak = 0
     temperature = 1.0  # starts high (explore), anneals down (exploit)
+    # Population of elite weight sets for diversity pressure
+    elite_population: List[WeightMap] = [copy.deepcopy(current_weights)]
 
     for gen in range(1, max_generations + 1):
         # Anneal temperature: linear decay
         temperature = max(0.05, 1.0 - (gen / max_generations) * 0.95)
 
-        # Generate children
+        # Generate children — mix of mutations from current + elite members
         candidates: List[Tuple[float, WeightMap, Dict]] = []
-        for _ in range(children_per_gen):
-            child_w = _mutate(current_weights, temperature)
+        for ci in range(children_per_gen):
+            # Every 3rd child mutates from a random elite member (diversity)
+            parent = random.choice(elite_population) if (ci % 3 == 2 and len(elite_population) > 1) else current_weights
+            child_w = _mutate(parent, temperature)
             child_result = run_simulation(
                 bars, symbol,
                 horizon_days=horizon_days,
@@ -165,23 +211,29 @@ async def optimize_weights(
                 live_predictions=live_predictions,
                 weights=child_w,
             )
-            candidates.append((_fitness(child_result), child_w, child_result))
+            raw_fit = _fitness(child_result)
+            div_pen = _diversity_penalty(child_w, elite_population)
+            candidates.append((raw_fit + div_pen, child_w, child_result, raw_fit))
 
         # Pick best child
         candidates.sort(key=lambda x: x[0], reverse=True)
-        best_child_fitness, best_child_w, best_child_result = candidates[0]
+        best_child_fitness_adj, best_child_w, best_child_result, best_child_raw = candidates[0]
 
-        improved = best_child_fitness > best_fitness
+        improved = best_child_raw > best_fitness
         if improved:
-            best_fitness = best_child_fitness
+            best_fitness = best_child_raw
             best_weights = copy.deepcopy(best_child_w)
             best_result = best_child_result
             current_weights = copy.deepcopy(best_child_w)
             no_improve_streak = 0
+            # Add to elite population (keep top 5)
+            elite_population.append(copy.deepcopy(best_child_w))
+            if len(elite_population) > 5:
+                elite_population.pop(0)
         else:
             no_improve_streak += 1
             # Accept slightly worse solution occasionally (simulated annealing)
-            delta = best_child_fitness - best_fitness
+            delta = best_child_raw - best_fitness
             accept_prob = math.exp(delta / max(temperature * 10, 0.01))
             if random.random() < accept_prob * 0.3:
                 current_weights = copy.deepcopy(best_child_w)

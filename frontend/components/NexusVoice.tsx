@@ -58,15 +58,20 @@ function ttsSpeak(text: string, muted: boolean) {
   if (muted || typeof window === "undefined" || !window.speechSynthesis) return;
   window.speechSynthesis.cancel();
   const clean = text
-    .replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "")
-    .replace(/[*_`#>]/g, "")
+    .replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "")   // strip app commands
+    .replace(/```[\s\S]*?```/g, "")              // strip code blocks
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")     // markdown links → text
+    .replace(/[*_`#>]/g, "")                     // strip markdown symbols
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 500);
+    .trim();
   if (!clean) return;
-  const utt = new SpeechSynthesisUtterance(clean);
-  utt.rate = 1.05; utt.pitch = 1.0; utt.volume = 1.0;
-  window.speechSynthesis.speak(utt);
+  // Queue sentences as separate utterances for natural pacing
+  const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+  sentences.forEach((sentence) => {
+    const utt = new SpeechSynthesisUtterance(sentence.trim());
+    utt.rate = 1.0; utt.pitch = 1.0; utt.volume = 1.0;
+    window.speechSynthesis.speak(utt);
+  });
 }
 
 // ── SimCard ───────────────────────────────────────────────────────────────────
@@ -457,9 +462,10 @@ export function NexusVoice() {
 
       if (!open) setUnread(n => n + 1);
 
-      // Speak: best-option voice_script > voice_reasoning > response
+      // Always speak — priority: voice_script > voice_reasoning > response
       const toSpeak = bestOption?.voice_script
-        ?? (voiceMode && res.voice_reasoning ? res.voice_reasoning : res.response);
+        ?? res.voice_reasoning
+        ?? res.response;
       ttsSpeak(toSpeak, muted);
 
     } catch (err: any) {

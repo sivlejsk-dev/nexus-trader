@@ -204,23 +204,53 @@ class AdaptivePredictionService:
         direction_stats = performance.get("by_direction", {}).get(direction)
         factor = direction_stats.get("learning_factor", 1.0) if direction_stats else 1.0
 
+        # Streak factor: recent consecutive wins/losses amplify adjustment
+        streak = performance.get("current_streak", {})
+        streak_dir = streak.get("direction")
+        streak_len = streak.get("length", 0)
+        streak_type = streak.get("type")  # "win" or "loss"
+        streak_mult = 1.0
+        if streak_dir == direction and streak_len >= 3:
+            if streak_type == "win":
+                streak_mult = min(1.15, 1.0 + streak_len * 0.03)
+            elif streak_type == "loss":
+                streak_mult = max(0.82, 1.0 - streak_len * 0.04)
+
+        combined_factor = round(factor * streak_mult, 3)
         adjusted = {**prediction}
-        adjusted["confidence"] = round(max(0.25, min(0.86, prediction["confidence"] * factor)), 2)
+        adjusted["confidence"] = round(max(0.25, min(0.88, prediction["confidence"] * combined_factor)), 2)
         adjusted["learning_adjustment"] = {
             "factor": round(factor, 2),
-            "reason": self._factor_reason(direction, direction_stats),
+            "streak_mult": round(streak_mult, 2),
+            "combined_factor": combined_factor,
+            "reason": self._factor_reason(direction, direction_stats, streak),
         }
         return adjusted
 
-    def _factor_reason(self, direction: str, stats: Optional[Dict[str, Any]]) -> str:
+    def _factor_reason(self, direction: str, stats: Optional[Dict[str, Any]],
+                       streak: Optional[Dict[str, Any]] = None) -> str:
+        parts = []
         if not stats or stats.get("total", 0) < 4:
-            return f"Not enough completed {direction} predictions for a strong adjustment yet."
-        rate = stats.get("win_rate")
-        if stats.get("learning_factor", 1.0) > 1:
-            return f"Recent {direction} predictions have been working ({rate}% win rate), so confidence is nudged up."
-        if stats.get("learning_factor", 1.0) < 1:
-            return f"Recent {direction} predictions have underperformed ({rate}% win rate), so confidence is reduced."
-        return f"Completed {direction} predictions are balanced ({rate}% win rate), so no adjustment is applied."
+            parts.append(f"Not enough completed {direction} predictions for a strong adjustment yet.")
+        else:
+            rate = stats.get("win_rate")
+            f = stats.get("learning_factor", 1.0)
+            if f > 1:
+                parts.append(f"Recent {direction} predictions are working ({rate}% win rate) — confidence nudged up.")
+            elif f < 1:
+                parts.append(f"Recent {direction} predictions underperformed ({rate}% win rate) — confidence reduced.")
+            else:
+                parts.append(f"Completed {direction} predictions are balanced ({rate}% win rate).")
+
+        if streak and streak.get("direction") == direction and streak.get("length", 0) >= 3:
+            stype = streak.get("type", "")
+            slen = streak.get("length", 0)
+            if stype == "win":
+                parts.append(f"On a {slen}-prediction win streak — momentum boost applied.")
+            elif stype == "loss":
+                parts.append(f"On a {slen}-prediction loss streak — caution applied.")
+
+        return " ".join(parts)
 
     async def _store_if_new(
         self,
@@ -361,20 +391,49 @@ class AdaptivePredictionService:
     def _mistake_notes(self, direction: str, move_pct: float, snapshot_json: str) -> List[str]:
         snapshot = json.loads(snapshot_json or "{}")
         tech = snapshot.get("technicals", {})
+        event_intel = snapshot.get("event_intelligence", {})
         notes = []
-        if direction == "call" and move_pct < 0:
-            notes.append("Bullish thesis failed because the underlying moved lower over the review window.")
-        elif direction == "put" and move_pct > 0:
-            notes.append("Bearish thesis failed because the underlying moved higher over the review window.")
-        elif direction == "neutral":
-            notes.append("Neutral thesis failed because price expanded beyond the expected quiet range.")
 
+        # Core failure reason
+        if direction == "call" and move_pct < 0:
+            severity = "sharply" if move_pct < -5 else "modestly"
+            notes.append(f"Bullish thesis failed — underlying moved {severity} lower ({move_pct:+.1f}%).")
+        elif direction == "put" and move_pct > 0:
+            severity = "sharply" if move_pct > 5 else "modestly"
+            notes.append(f"Bearish thesis failed — underlying moved {severity} higher ({move_pct:+.1f}%).")
+        elif direction == "neutral":
+            notes.append(f"Neutral thesis failed — price expanded {abs(move_pct):.1f}% beyond the quiet range.")
+
+        # RSI context
         rsi = tech.get("rsi")
-        if rsi is not None and 45 <= rsi <= 55:
-            notes.append("RSI was mid-range, so the setup may have lacked directional conviction.")
-        if not tech.get("sma_50") or not tech.get("sma_200"):
-            notes.append("Moving-average context was incomplete; future confidence should stay conservative.")
-        return notes[:4]
+        if rsi is not None:
+            if 45 <= rsi <= 55:
+                notes.append("RSI was mid-range at entry — setup lacked directional conviction.")
+            elif direction == "call" and rsi > 65:
+                notes.append("RSI was already elevated at entry — overbought conditions may have capped upside.")
+            elif direction == "put" and rsi < 35:
+                notes.append("RSI was already oversold at entry — bounce risk was elevated.")
+
+        # Trend alignment
+        sma50 = tech.get("sma_50")
+        sma200 = tech.get("sma_200")
+        price_at_entry = snapshot.get("quote", {}).get("price")
+        if sma50 and sma200 and price_at_entry:
+            if direction == "call" and float(price_at_entry) < float(sma50):
+                notes.append("Price was below SMA50 at entry — trend was not aligned with the bullish thesis.")
+            elif direction == "put" and float(price_at_entry) > float(sma50):
+                notes.append("Price was above SMA50 at entry — trend was not aligned with the bearish thesis.")
+
+        # Event intelligence conflict
+        event_bias = event_intel.get("bias")
+        if event_bias and event_bias != "neutral":
+            if (direction == "call" and event_bias == "bearish") or (direction == "put" and event_bias == "bullish"):
+                notes.append(f"Event intelligence was {event_bias} at entry — conflicted with the {direction} thesis.")
+
+        if not sma50 or not sma200:
+            notes.append("Moving-average context was incomplete — confidence should stay conservative in future.")
+
+        return notes[:5]
 
     async def _performance(self, symbol: str) -> Dict[str, Any]:
         async with get_db() as db:
@@ -427,7 +486,7 @@ class AdaptivePredictionService:
             })
 
         recent_predictions = []
-        for row in rows[:8]:
+        for row in rows[:10]:
             recent_predictions.append({
                 "created_at": row["created_at"],
                 "direction": row["predicted_direction"],
@@ -440,6 +499,19 @@ class AdaptivePredictionService:
                 "pnl_pct": row["pnl_pct"],
             })
 
+        # ── Current streak ──
+        current_streak = self._compute_streak(completed)
+
+        # ── Best/worst confidence bands ──
+        confidence_analysis = self._analyze_confidence_bands(completed)
+
+        # ── Avg hold P&L by direction ──
+        avg_pnl_by_dir = {}
+        for direction in ("call", "put", "neutral"):
+            dp = [r for r in completed if r["predicted_direction"] == direction and r["pnl_pct"] is not None]
+            if dp:
+                avg_pnl_by_dir[direction] = round(sum(float(r["pnl_pct"]) for r in dp) / len(dp), 2)
+
         return {
             "completed": len(completed),
             "pending": len(pending),
@@ -447,9 +519,46 @@ class AdaptivePredictionService:
             "losses": len(losses),
             "win_rate": round(len(wins) / len(completed) * 100, 1) if completed else None,
             "by_direction": by_direction,
+            "current_streak": current_streak,
+            "confidence_analysis": confidence_analysis,
+            "avg_pnl_by_direction": avg_pnl_by_dir,
             "recent_mistakes": recent_mistakes,
             "recent_predictions": recent_predictions,
         }
+
+    def _compute_streak(self, completed: list) -> Dict[str, Any]:
+        """Find the current consecutive win/loss streak across all directions."""
+        if not completed:
+            return {"type": None, "length": 0, "direction": None}
+        # completed is ordered DESC by created_at
+        streak_type = completed[0]["outcome_status"]
+        streak_dir = completed[0]["predicted_direction"]
+        length = 0
+        for row in completed:
+            if row["outcome_status"] == streak_type and row["predicted_direction"] == streak_dir:
+                length += 1
+            else:
+                break
+        return {"type": streak_type, "length": length, "direction": streak_dir}
+
+    def _analyze_confidence_bands(self, completed: list) -> List[Dict[str, Any]]:
+        """Break predictions into confidence buckets and show actual accuracy per band."""
+        buckets = [(0.25, 0.50, "25-50%"), (0.50, 0.65, "50-65%"),
+                   (0.65, 0.75, "65-75%"), (0.75, 0.88, "75-88%")]
+        result = []
+        for lo, hi, label in buckets:
+            band = [r for r in completed if lo <= float(r["confidence"]) < hi]
+            if not band:
+                continue
+            wins_b = sum(1 for r in band if r["outcome_status"] == "win")
+            result.append({
+                "band": label,
+                "total": len(band),
+                "wins": wins_b,
+                "actual_win_rate": round(wins_b / len(band) * 100, 1),
+                "calibrated": abs(wins_b / len(band) - (lo + hi) / 2) < 0.12,
+            })
+        return result
 
 
 adaptive_prediction_service = AdaptivePredictionService()

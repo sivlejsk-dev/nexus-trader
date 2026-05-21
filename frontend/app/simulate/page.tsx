@@ -4,11 +4,12 @@ import { useState, useCallback, useMemo } from "react";
 import {
   Play, RefreshCw, AlertTriangle, TrendingUp, TrendingDown,
   Minus, Globe, ChevronDown, ChevronUp, Zap, BarChart2,
-  CheckCircle, XCircle, Clock,
+  CheckCircle, XCircle, Brain, Target, Activity, Layers,
 } from "lucide-react";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ReferenceLine, Cell,
+  Tooltip, ResponsiveContainer, ReferenceLine, Cell, RadarChart,
+  PolarGrid, PolarAngleAxis, Radar,
 } from "recharts";
 import { api, type SimulationResult, type SimulationPrediction, type WorldEvent } from "@/lib/api";
 import { cn, fmtPrice } from "@/lib/utils";
@@ -34,6 +35,212 @@ function DirectionBadge({ d }: { d: string }) {
   if (d === "call") return <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-900/20 border border-green-800/30 text-green-400 font-semibold flex items-center gap-1"><TrendingUp size={9}/>CALL</span>;
   if (d === "put")  return <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-900/20 border border-red-800/30 text-red-400 font-semibold flex items-center gap-1"><TrendingDown size={9}/>PUT</span>;
   return <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-900/20 border border-gray-800/30 text-gray-400 font-semibold flex items-center gap-1"><Minus size={9}/>NEUTRAL</span>;
+}
+
+// ── Regime breakdown panel ────────────────────────────────────────────────────
+
+const REGIME_CFG: Record<string, { label: string; color: string; bg: string }> = {
+  trending_up:   { label: "Trending Up",   color: "text-green-400",  bg: "bg-green-900/20 border-green-800/30" },
+  trending_down: { label: "Trending Down", color: "text-red-400",    bg: "bg-red-900/20 border-red-800/30" },
+  ranging:       { label: "Ranging",       color: "text-blue-400",   bg: "bg-blue-900/20 border-blue-800/30" },
+  volatile:      { label: "Volatile",      color: "text-yellow-400", bg: "bg-yellow-900/20 border-yellow-800/30" },
+};
+
+function RegimePanel({ result }: { result: SimulationResult }) {
+  const stats = result.regime_stats;
+  if (!stats || Object.keys(stats).length === 0) return null;
+  return (
+    <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Activity size={13} className="text-purple-400" />
+        <span className="text-xs font-semibold text-gray-400">Win Rate by Market Regime</span>
+      </div>
+      <div className="space-y-2">
+        {Object.entries(stats).map(([regime, s]) => {
+          const cfg = REGIME_CFG[regime] || { label: regime, color: "text-gray-400", bg: "bg-gray-900/20 border-gray-800/30" };
+          const wr = s.win_rate ?? 0;
+          return (
+            <div key={regime} className={cn("border rounded-lg px-3 py-2", cfg.bg)}>
+              <div className="flex items-center justify-between mb-1">
+                <span className={cn("text-[10px] font-semibold", cfg.color)}>{cfg.label}</span>
+                <span className={cn("text-xs font-mono font-bold", wr >= 55 ? "text-green-400" : "text-red-400")}>{wr}%</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-1.5 bg-[#1f2937] rounded-full overflow-hidden">
+                  <div className={cn("h-full rounded-full", wr >= 55 ? "bg-green-500" : "bg-red-500")} style={{ width: `${wr}%` }} />
+                </div>
+                <span className="text-[10px] text-gray-600">{s.total} trades</span>
+                <span className={cn("text-[10px] font-mono", s.avg_pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                  {s.avg_pnl >= 0 ? "+" : ""}{s.avg_pnl}%
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Multi-timeframe alignment panel ──────────────────────────────────────────
+
+function MTFPanel({ result }: { result: SimulationResult }) {
+  const mtf = result.mtf_stats;
+  if (!mtf) return null;
+  const alignedWR = mtf.aligned.win_rate;
+  const unalignedWR = mtf.unaligned.win_rate;
+  const lift = alignedWR != null && unalignedWR != null ? +(alignedWR - unalignedWR).toFixed(1) : null;
+  return (
+    <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Layers size={13} className="text-cyan-400" />
+        <span className="text-xs font-semibold text-gray-400">Multi-Timeframe Alignment</span>
+        {lift != null && (
+          <span className={cn("text-[10px] px-2 py-0.5 rounded-full border ml-auto",
+            lift > 0 ? "text-green-400 bg-green-900/20 border-green-800/30" : "text-gray-500 bg-gray-900/20 border-gray-800/30")}>
+            {lift > 0 ? `+${lift}% lift when aligned` : "No alignment lift"}
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {[
+          { label: "Aligned", data: mtf.aligned, color: "text-green-400", bar: "bg-green-500" },
+          { label: "Not Aligned", data: mtf.unaligned, color: "text-red-400", bar: "bg-red-500" },
+        ].map(({ label, data, color, bar }) => {
+          const wr = data.win_rate ?? 0;
+          return (
+            <div key={label} className="bg-[#0d1117] rounded-lg p-3">
+              <div className="text-[10px] text-gray-500 mb-1">{label}</div>
+              <div className={cn("text-xl font-bold font-mono", color)}>{wr != null ? `${wr}%` : "—"}</div>
+              <div className="mt-1.5 h-1.5 bg-[#1f2937] rounded-full overflow-hidden">
+                <div className={cn("h-full rounded-full", bar)} style={{ width: `${wr}%` }} />
+              </div>
+              <div className="text-[10px] text-gray-600 mt-1">{data.total} trades</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Confidence calibration panel ──────────────────────────────────────────────
+
+function CalibrationPanel({ result }: { result: SimulationResult }) {
+  const cal = result.calibration;
+  if (!cal || cal.length === 0) return null;
+  return (
+    <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Target size={13} className="text-orange-400" />
+        <span className="text-xs font-semibold text-gray-400">Confidence Calibration</span>
+        <span className="text-[10px] text-gray-600 ml-auto">Does high confidence = higher win rate?</span>
+      </div>
+      <ResponsiveContainer width="100%" height={120}>
+        <ComposedChart data={cal} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1a2235" vertical={false} />
+          <XAxis dataKey="bucket" tick={{ fill: "#4b5563", fontSize: 9 }} tickLine={false} axisLine={false} />
+          <YAxis tick={{ fill: "#4b5563", fontSize: 9 }} tickLine={false} axisLine={false} width={32}
+            tickFormatter={(v) => `${v}%`} domain={[0, 100]} />
+          <Tooltip contentStyle={{ background: "#1a2235", border: "1px solid #374151", borderRadius: 8, fontSize: 11 }}
+            formatter={(v: number, name: string) => [`${v}%`, name === "actual_win_rate" ? "Actual Win Rate" : "Predicted"]} />
+          <ReferenceLine y={50} stroke="#374151" strokeDasharray="3 2" />
+          <Bar dataKey="actual_win_rate" name="actual_win_rate" radius={[3, 3, 0, 0]}>
+            {cal.map((b, i) => (
+              <Cell key={i} fill={b.actual_win_rate >= 55 ? "#22c55e" : b.actual_win_rate >= 45 ? "#f59e0b" : "#ef4444"} />
+            ))}
+          </Bar>
+          <Line type="monotone" dataKey="predicted_confidence" stroke="#6366f1" strokeWidth={1.5}
+            strokeDasharray="4 2" dot={false} name="predicted_confidence" />
+        </ComposedChart>
+      </ResponsiveContainer>
+      <div className="flex gap-3 mt-2">
+        <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <div className="w-3 h-2 rounded-sm bg-green-500" /> Actual win rate
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+          <div className="w-4 h-px bg-indigo-400" style={{ borderTop: "2px dashed #6366f1" }} /> Predicted confidence
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Signal quality radar ──────────────────────────────────────────────────────
+
+function SignalRadar({ result }: { result: SimulationResult }) {
+  const stats = result.signal_stats;
+  if (!stats) return null;
+  const data = Object.entries(stats)
+    .filter(([, s]) => s.total >= 5)
+    .map(([key, s]) => ({
+      signal: key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
+      win_rate: s.win_rate ?? 0,
+      total: s.total,
+    }));
+  if (data.length < 3) return null;
+  return (
+    <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Brain size={13} className="text-blue-400" />
+        <span className="text-xs font-semibold text-gray-400">Signal Win Rates</span>
+      </div>
+      <ResponsiveContainer width="100%" height={180}>
+        <RadarChart data={data} margin={{ top: 8, right: 24, left: 24, bottom: 8 }}>
+          <PolarGrid stroke="#1f2937" />
+          <PolarAngleAxis dataKey="signal" tick={{ fill: "#6b7280", fontSize: 9 }} />
+          <Radar dataKey="win_rate" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} strokeWidth={1.5} />
+          <Tooltip contentStyle={{ background: "#1a2235", border: "1px solid #374151", borderRadius: 8, fontSize: 11 }}
+            formatter={(v: number) => [`${v}%`, "Win Rate"]} />
+        </RadarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ── Learning factors panel ────────────────────────────────────────────────────
+
+function LearningPanel({ result }: { result: SimulationResult }) {
+  const factors = result.learning_factors;
+  if (!factors) return null;
+  const entries = Object.entries(factors).filter(([d]) => d !== "neutral");
+  return (
+    <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Brain size={13} className="text-cyan-400" />
+        <span className="text-xs font-semibold text-gray-400">Live Learning Factors</span>
+        <span className="text-[10px] text-gray-600 ml-auto">Applied from past predictions</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {entries.map(([dir, factor]) => {
+          const boosted = factor > 1.0;
+          const reduced = factor < 1.0;
+          return (
+            <div key={dir} className={cn("rounded-lg border p-3",
+              boosted ? "bg-green-900/15 border-green-800/30" :
+              reduced ? "bg-red-900/15 border-red-800/30" :
+              "bg-[#0d1117] border-[#1f2937]")}>
+              <div className="text-[10px] text-gray-500 uppercase mb-1">{dir}</div>
+              <div className={cn("text-xl font-bold font-mono",
+                boosted ? "text-green-400" : reduced ? "text-red-400" : "text-gray-400")}>
+                {factor.toFixed(2)}×
+              </div>
+              <div className="text-[10px] mt-1">
+                {boosted ? <span className="text-green-500">Confidence boosted</span> :
+                 reduced ? <span className="text-red-500">Confidence reduced</span> :
+                 <span className="text-gray-600">No adjustment</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {result.using_learned_weights && (
+        <div className="mt-3 flex items-center gap-1.5 text-[10px] text-cyan-500">
+          <Zap size={10} /> Using optimized signal weights for this symbol
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Accuracy summary cards ────────────────────────────────────────────────────
@@ -217,10 +424,25 @@ function PredictionTable({ predictions }: { predictions: SimulationPrediction[] 
                     <span className="text-blue-500">›</span>{r}
                   </div>
                 ))}
-                <div className="flex gap-4 text-[10px] text-gray-600 mt-1">
+                <div className="flex flex-wrap gap-3 text-[10px] text-gray-600 mt-1.5">
                   {p.rsi != null && <span>RSI {p.rsi}</span>}
                   {p.sma20 != null && <span>SMA20 {fmtPrice(p.sma20)}</span>}
                   <span>Confidence {Math.round(p.confidence * 100)}%</span>
+                  {p.regime && (
+                    <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-medium",
+                      p.regime === "trending_up" ? "bg-green-900/30 text-green-400" :
+                      p.regime === "trending_down" ? "bg-red-900/30 text-red-400" :
+                      p.regime === "volatile" ? "bg-yellow-900/30 text-yellow-400" :
+                      "bg-blue-900/30 text-blue-400")}>
+                      {p.regime.replace("_", " ")}
+                    </span>
+                  )}
+                  {p.mtf_aligned != null && (
+                    <span className={cn("px-1.5 py-0.5 rounded text-[9px]",
+                      p.mtf_aligned ? "bg-cyan-900/30 text-cyan-400" : "bg-gray-900/30 text-gray-500")}>
+                      MTF {p.mtf_aligned ? "aligned" : "unaligned"}
+                    </span>
+                  )}
                 </div>
               </div>
             )}
@@ -355,10 +577,15 @@ export default function SimulatePage() {
 
         {result && !loading && (
           <>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-lg font-bold text-white font-mono">{result.symbol}</span>
               <span className="text-sm text-gray-500">{result.date_range.start} → {result.date_range.end}</span>
               <span className="text-[10px] text-gray-600 bg-[#1f2937] px-2 py-0.5 rounded-full">{result.horizon_days}-day prediction window</span>
+              {result.using_learned_weights && (
+                <span className="text-[10px] text-cyan-400 bg-cyan-900/20 border border-cyan-800/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <Zap size={9} /> Optimized weights active
+                </span>
+              )}
             </div>
 
             <AccuracySummary result={result} />
@@ -367,6 +594,19 @@ export default function SimulatePage() {
               <DirectionBreakdown byDir={result.by_direction} />
               <EquityCurve predictions={result.predictions} />
             </div>
+
+            {/* New intelligence panels */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <RegimePanel result={result} />
+              <MTFPanel result={result} />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <CalibrationPanel result={result} />
+              <SignalRadar result={result} />
+            </div>
+
+            <LearningPanel result={result} />
 
             <WorldEventsPanel events={result.events} />
             <PredictionTable predictions={result.predictions} />

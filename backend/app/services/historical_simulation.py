@@ -1,9 +1,10 @@
-"""Historical simulation engine — upgraded with MACD, Bollinger Bands,
-volume analysis, and adaptive learning from live prediction outcomes.
+"""Historical simulation engine — with regime detection, multi-timeframe
+confluence, signal attribution, and calibrated confidence scoring.
 """
 from __future__ import annotations
 
 import math
+import statistics
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -197,6 +198,128 @@ def _volume_ratio(volumes: List[float], period: int = 20) -> Optional[float]:
     return round(volumes[-1] / avg, 2)
 
 
+def _detect_regime(closes: List[float]) -> str:
+    """
+    Classify the current market regime using trend + volatility.
+    Returns: 'trending_up', 'trending_down', 'ranging', 'volatile'
+    """
+    if len(closes) < 50:
+        return "unknown"
+    sma20 = _sma(closes, 20)
+    sma50 = _sma(closes, 50)
+    if sma20 is None or sma50 is None:
+        return "unknown"
+
+    # Volatility: std dev of 20-bar returns
+    returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(-20, 0)]
+    try:
+        vol = statistics.stdev(returns) * 100  # annualised-ish daily vol %
+    except statistics.StatisticsError:
+        vol = 0.0
+
+    price = closes[-1]
+    trend_strength = abs(sma20 - sma50) / sma50 * 100 if sma50 else 0
+
+    if vol > 3.0:
+        return "volatile"
+    if trend_strength > 2.0:
+        return "trending_up" if sma20 > sma50 else "trending_down"
+    return "ranging"
+
+
+def _regime_confidence_multiplier(regime: str, direction: str) -> float:
+    """
+    Adjust confidence based on regime/direction alignment.
+    Trending regimes reward aligned calls/puts; ranging rewards mean-reversion.
+    """
+    table = {
+        ("trending_up",   "call"):    1.10,
+        ("trending_up",   "put"):     0.88,
+        ("trending_up",   "neutral"): 0.92,
+        ("trending_down", "put"):     1.10,
+        ("trending_down", "call"):    0.88,
+        ("trending_down", "neutral"): 0.92,
+        ("ranging",       "call"):    1.05,
+        ("ranging",       "put"):     1.05,
+        ("ranging",       "neutral"): 1.08,
+        ("volatile",      "call"):    0.90,
+        ("volatile",      "put"):     0.90,
+        ("volatile",      "neutral"): 1.12,
+    }
+    return table.get((regime, direction), 1.0)
+
+
+def _multi_timeframe_bias(bars: List[Dict[str, Any]], i: int) -> Tuple[str, float]:
+    """
+    Compute bias across 3 timeframes (short/medium/long) using SMA alignment.
+    Returns (bias, confluence_score 0-1).
+    """
+    closes = [b["close"] for b in bars[max(0, i - 200): i + 1]]
+    if len(closes) < 50:
+        return "neutral", 0.0
+
+    sma10  = _sma(closes, min(10,  len(closes)))
+    sma20  = _sma(closes, min(20,  len(closes)))
+    sma50  = _sma(closes, min(50,  len(closes)))
+    sma100 = _sma(closes, min(100, len(closes)))
+    price  = closes[-1]
+
+    votes_bull = 0
+    votes_bear = 0
+    total = 0
+
+    for sma in [sma10, sma20, sma50, sma100]:
+        if sma is None:
+            continue
+        total += 1
+        if price > sma:
+            votes_bull += 1
+        else:
+            votes_bear += 1
+
+    if total == 0:
+        return "neutral", 0.0
+
+    if votes_bull > votes_bear:
+        return "bullish", votes_bull / total
+    if votes_bear > votes_bull:
+        return "bearish", votes_bear / total
+    return "neutral", 0.0
+
+
+def _streak_factor(predictions: List[Dict[str, Any]], direction: str, window: int = 5) -> float:
+    """
+    Boost/reduce confidence based on recent win/loss streak for this direction.
+    Returns multiplier 0.85–1.15.
+    """
+    recent = [p for p in predictions[-window * 3:] if p["direction"] == direction][-window:]
+    if len(recent) < 3:
+        return 1.0
+    wins = sum(1 for p in recent if p["outcome"] == "win")
+    rate = wins / len(recent)
+    if rate >= 0.80:
+        return 1.12
+    if rate >= 0.65:
+        return 1.06
+    if rate <= 0.20:
+        return 0.85
+    if rate <= 0.35:
+        return 0.92
+    return 1.0
+
+
+def _calibrate_confidence(raw: float, regime_mult: float, mtf_confluence: float,
+                           streak_mult: float) -> float:
+    """
+    Combine raw signal confidence with regime, multi-timeframe, and streak factors.
+    Output is clamped to [0.30, 0.88].
+    """
+    # MTF confluence adds up to +0.06 when all timeframes agree
+    mtf_boost = (mtf_confluence - 0.5) * 0.12
+    adjusted = raw * regime_mult * streak_mult + mtf_boost
+    return round(max(0.30, min(0.88, adjusted)), 2)
+
+
 # ── Default signal weights (baseline) ────────────────────────────────────────
 # Each key maps to the base contribution weight for that signal.
 # The optimizer mutates these to find the best-performing combination.
@@ -334,25 +457,45 @@ def _score_bar(
     # ── ATR-based volatility context ──
     atr = _atr(window_bars)
 
+    # ── Regime detection ──
+    regime = _detect_regime(closes)
+
     edge = bullish - bearish
     total = max(bullish + bearish, 1.0)
     edge_thresh = max(0.1, w.get("edge_threshold", 0.60))
     if abs(edge) < edge_thresh:
         direction = "neutral"
-        confidence = 0.42
+        raw_confidence = 0.42
     elif edge > 0:
         direction = "call"
-        confidence = min(0.85, 0.48 + min(abs(edge) / total, 1) * 0.37)
+        raw_confidence = min(0.85, 0.48 + min(abs(edge) / total, 1) * 0.37)
     else:
         direction = "put"
-        confidence = min(0.85, 0.48 + min(abs(edge) / total, 1) * 0.37)
+        raw_confidence = min(0.85, 0.48 + min(abs(edge) / total, 1) * 0.37)
+
+    regime_mult = _regime_confidence_multiplier(regime, direction)
+    confidence = round(max(0.30, min(0.88, raw_confidence * regime_mult)), 2)
+
+    # Signal attribution: which signals fired and in which direction
+    signal_attribution = {
+        "sma_trend":    "bullish" if sma20 and price > sma20 else "bearish" if sma20 else None,
+        "sma_cross":    "bullish" if sma20 and sma50 and sma20 > sma50 else "bearish" if sma20 and sma50 else None,
+        "rsi":          "bullish" if rsi and rsi < 40 else "bearish" if rsi and rsi > 60 else "neutral" if rsi else None,
+        "macd":         "bullish" if macd_line and macd_signal and macd_line > macd_signal else "bearish" if macd_line and macd_signal else None,
+        "bb":           "bullish" if bb.get("pct_b") and bb["pct_b"] < 0.15 else "bearish" if bb.get("pct_b") and bb["pct_b"] > 0.85 else "neutral",
+        "volume":       "confirming" if vol_ratio and vol_ratio > 1.5 else "neutral",
+    }
 
     return {
         "direction": direction,
-        "confidence": round(confidence, 2),
+        "confidence": confidence,
+        "raw_confidence": round(raw_confidence, 2),
+        "regime": regime,
+        "regime_mult": round(regime_mult, 2),
         "bullish": round(bullish, 2),
         "bearish": round(bearish, 2),
-        "rationale": rationale[:4],
+        "signal_attribution": signal_attribution,
+        "rationale": rationale[:5],
         "rsi": rsi,
         "sma20": round(sma20, 2) if sma20 else None,
         "sma50": round(sma50, 2) if sma50 else None,
@@ -409,7 +552,7 @@ def run_simulation(
 
     learning_factors = _build_learning_factors(live_predictions or [])
     effective_weights = {**DEFAULT_WEIGHTS, **(weights or {})}
-    predictions = []
+    predictions: List[Dict[str, Any]] = []
 
     indices = list(range(80, len(bars) - horizon_days, sample_every))
 
@@ -424,10 +567,29 @@ def run_simulation(
         actual_move_pct = (exit_price - entry_price) / entry_price * 100
 
         direction = score["direction"]
-        raw_confidence = score["confidence"]
-        # Apply adaptive learning factor
-        factor = learning_factors.get(direction, 1.0)
-        adjusted_confidence = round(max(0.25, min(0.88, raw_confidence * factor)), 2)
+
+        # Multi-timeframe confluence
+        mtf_bias, mtf_confluence = _multi_timeframe_bias(bars, i)
+        mtf_aligned = (
+            (direction == "call" and mtf_bias == "bullish") or
+            (direction == "put"  and mtf_bias == "bearish") or
+            (direction == "neutral")
+        )
+
+        # Streak factor from predictions so far
+        streak_mult = _streak_factor(predictions, direction)
+
+        # Calibrated confidence
+        adjusted_confidence = _calibrate_confidence(
+            score["raw_confidence"],
+            score["regime_mult"],
+            mtf_confluence if mtf_aligned else 1.0 - mtf_confluence,
+            streak_mult,
+        )
+
+        # Learning factor from live predictions
+        live_factor = learning_factors.get(direction, 1.0)
+        final_confidence = round(max(0.25, min(0.88, adjusted_confidence * live_factor)), 2)
 
         if direction == "call":
             won = actual_move_pct >= 1.0
@@ -448,13 +610,20 @@ def run_simulation(
             "entry_price": round(entry_price, 2),
             "exit_price": round(exit_price, 2),
             "direction": direction,
-            "confidence": adjusted_confidence,
-            "raw_confidence": raw_confidence,
-            "learning_factor": factor,
+            "confidence": final_confidence,
+            "raw_confidence": score["raw_confidence"],
+            "regime": score["regime"],
+            "regime_mult": score["regime_mult"],
+            "mtf_bias": mtf_bias,
+            "mtf_confluence": round(mtf_confluence, 2),
+            "mtf_aligned": mtf_aligned,
+            "streak_mult": round(streak_mult, 2),
+            "learning_factor": live_factor,
             "actual_move_pct": round(actual_move_pct, 2),
             "pnl_pct": round(pnl_pct, 2),
             "outcome": "win" if won else "loss",
             "rationale": score["rationale"],
+            "signal_attribution": score.get("signal_attribution", {}),
             "rsi": score["rsi"],
             "sma20": score["sma20"],
             "macd": score["macd"],
@@ -480,8 +649,38 @@ def run_simulation(
             "learning_factor": learning_factors.get(d, 1.0),
         }
 
+    # ── Regime breakdown ──
+    regime_stats: Dict[str, Any] = {}
+    for regime in ("trending_up", "trending_down", "ranging", "volatile", "unknown"):
+        rp = [p for p in completed if p.get("regime") == regime]
+        rw = [p for p in rp if p["outcome"] == "win"]
+        if rp:
+            regime_stats[regime] = {
+                "total": len(rp),
+                "wins": len(rw),
+                "win_rate": round(len(rw) / len(rp) * 100, 1),
+                "avg_pnl": round(sum(p["pnl_pct"] for p in rp) / len(rp), 2),
+            }
+
+    # ── MTF alignment stats ──
+    aligned = [p for p in completed if p.get("mtf_aligned")]
+    unaligned = [p for p in completed if not p.get("mtf_aligned")]
+    mtf_stats = {
+        "aligned": {
+            "total": len(aligned),
+            "win_rate": round(sum(1 for p in aligned if p["outcome"] == "win") / len(aligned) * 100, 1) if aligned else None,
+        },
+        "unaligned": {
+            "total": len(unaligned),
+            "win_rate": round(sum(1 for p in unaligned if p["outcome"] == "win") / len(unaligned) * 100, 1) if unaligned else None,
+        },
+    }
+
     # ── Signal quality breakdown ──
     signal_stats = _compute_signal_stats(predictions)
+
+    # ── Confidence calibration: bucket predictions by confidence and check accuracy ──
+    calibration = _compute_calibration(completed)
 
     events = get_events_for_range(bars[0]["date"], bars[-1]["date"]) if bars else []
 
@@ -493,7 +692,10 @@ def run_simulation(
         "win_rate": round(len(wins) / len(completed) * 100, 1) if completed else None,
         "avg_pnl_pct": round(sum(p["pnl_pct"] for p in completed) / len(completed), 2) if completed else None,
         "by_direction": by_dir,
+        "regime_stats": regime_stats,
+        "mtf_stats": mtf_stats,
         "signal_stats": signal_stats,
+        "calibration": calibration,
         "learning_factors": learning_factors,
         "weights_used": effective_weights,
         "predictions": predictions,
@@ -504,6 +706,34 @@ def run_simulation(
             "end": bars[-1]["date"] if bars else None,
         },
     }
+
+
+def _compute_calibration(completed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Bucket predictions by confidence level and measure actual win rate per bucket.
+    Reveals whether high-confidence predictions actually win more often.
+    """
+    buckets = [
+        (0.30, 0.50, "30-50%"),
+        (0.50, 0.60, "50-60%"),
+        (0.60, 0.70, "60-70%"),
+        (0.70, 0.80, "70-80%"),
+        (0.80, 0.90, "80-90%"),
+    ]
+    result = []
+    for lo, hi, label in buckets:
+        bucket = [p for p in completed if lo <= p["confidence"] < hi]
+        if not bucket:
+            continue
+        wins = sum(1 for p in bucket if p["outcome"] == "win")
+        result.append({
+            "bucket": label,
+            "predicted_confidence": round((lo + hi) / 2 * 100, 0),
+            "actual_win_rate": round(wins / len(bucket) * 100, 1),
+            "total": len(bucket),
+            "wins": wins,
+        })
+    return result
 
 
 def _compute_signal_stats(predictions: List[Dict[str, Any]]) -> Dict[str, Any]:

@@ -23,12 +23,19 @@ function ConsolePageInner() {
   const [error, setError] = useState<string | null>(null);
   const [showAllPatterns, setShowAllPatterns] = useState(false);
   const [providerSummary, setProviderSummary] = useState<string>("Checking data sources...");
+  const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
+  const [activeModel, setActiveModel] = useState<string | null>(null);
 
   useEffect(() => {
     api.providers()
       .then((res) => {
-        const active = res.providers.filter((p) => p.configured).map((p) => p.name).join(" → ");
+        const active = res.providers.filter((p: any) => p.configured).map((p: any) => p.name).join(" → ");
         setProviderSummary(active || "No market providers configured");
+        const ai = (res as any).ai_status;
+        if (ai) {
+          setAiConfigured(ai.llm_configured);
+          setActiveModel(ai.active_model ?? null);
+        }
       })
       .catch(() => setProviderSummary("Provider status unavailable"));
   }, []);
@@ -166,7 +173,48 @@ function ConsolePageInner() {
           <div className="flex items-center gap-2 bg-[#111827] border border-[#1f2937] rounded-xl px-4 py-2.5 text-xs text-gray-500">
             <Zap size={12} className="text-blue-400 flex-shrink-0" />
             <span>Data: {providerSummary}</span>
+            {aiConfigured === true && activeModel && (
+              <span className="ml-auto flex items-center gap-1 text-green-500">
+                <BrainCircuit size={11} /> AI: {activeModel}
+              </span>
+            )}
+            {aiConfigured === false && (
+              <span className="ml-auto flex items-center gap-1 text-yellow-500">
+                <AlertTriangle size={11} /> AI chat disabled — no API key
+              </span>
+            )}
           </div>
+
+          {/* AI setup banner */}
+          {aiConfigured === false && (
+            <div className="flex items-start gap-3 bg-yellow-900/10 border border-yellow-800/30 rounded-xl px-4 py-3">
+              <AlertTriangle size={15} className="text-yellow-500 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-yellow-400 mb-1">AI chat is not configured</div>
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  Nexus can still run simulations, predictions, and technical analysis — but the AI chat assistant requires an API key.
+                  Add one of the following to <code className="text-yellow-300 bg-yellow-900/30 px-1 rounded">backend/.env</code>:
+                </p>
+                <div className="mt-2 space-y-1">
+                  <div className="flex items-center gap-2 text-xs">
+                    <code className="text-green-300 bg-[#1f2937] px-2 py-0.5 rounded font-mono">GROQ_API_KEY=gsk_...</code>
+                    <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer"
+                      className="text-blue-400 hover:text-blue-300 flex items-center gap-0.5">
+                      <ExternalLink size={10} /> Free at console.groq.com
+                    </a>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <code className="text-green-300 bg-[#1f2937] px-2 py-0.5 rounded font-mono">NEXUS_API_KEY=sk-...</code>
+                    <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"
+                      className="text-blue-400 hover:text-blue-300 flex items-center gap-0.5">
+                      <ExternalLink size={10} /> OpenAI platform
+                    </a>
+                  </div>
+                </div>
+                <p className="text-[10px] text-gray-600 mt-2">After adding the key, restart the backend service.</p>
+              </div>
+            </div>
+          )}
 
           {/* Adaptive prediction + review */}
           {adaptive && (
@@ -213,10 +261,19 @@ function ConsolePageInner() {
                   <div>
                     <div className="text-xs font-semibold text-gray-400 mb-2">Learning Adjustment</div>
                     <p className="text-xs text-gray-400 leading-relaxed">{adaptive.prediction.learning_adjustment.reason}</p>
-                    <div className="mt-2 flex gap-3 text-[10px] text-gray-600">
+                    <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-gray-600">
                       <span>Bull {adaptive.prediction.raw_scores.bullish.toFixed(1)}</span>
                       <span>Bear {adaptive.prediction.raw_scores.bearish.toFixed(1)}</span>
-                      <span>×{adaptive.prediction.learning_adjustment.factor.toFixed(2)}</span>
+                      <span className={cn((adaptive.prediction.learning_adjustment as any).combined_factor > 1 ? "text-green-500" :
+                        (adaptive.prediction.learning_adjustment as any).combined_factor < 1 ? "text-red-500" : "text-gray-600")}>
+                        ×{((adaptive.prediction.learning_adjustment as any).combined_factor ?? adaptive.prediction.learning_adjustment.factor).toFixed(2)}
+                      </span>
+                      {(adaptive.prediction.learning_adjustment as any).streak_mult != null &&
+                       (adaptive.prediction.learning_adjustment as any).streak_mult !== 1.0 && (
+                        <span className="text-purple-400">
+                          streak ×{(adaptive.prediction.learning_adjustment as any).streak_mult.toFixed(2)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -236,7 +293,20 @@ function ConsolePageInner() {
                 <div className="flex items-center gap-2 text-sm font-semibold text-white mb-3">
                   <History size={14} className="text-blue-400" /> Track Record
                 </div>
-                <div className="grid grid-cols-2 gap-2 mb-3">
+
+                {/* Streak badge */}
+                {(adaptive.review as any).current_streak?.length >= 2 && (
+                  <div className={cn("mb-3 flex items-center gap-2 rounded-lg px-3 py-2 text-xs border",
+                    (adaptive.review as any).current_streak.type === "win"
+                      ? "bg-green-900/20 border-green-800/30 text-green-400"
+                      : "bg-red-900/20 border-red-800/30 text-red-400")}>
+                    <span className="font-bold text-sm">{(adaptive.review as any).current_streak.length}×</span>
+                    <span className="capitalize">{(adaptive.review as any).current_streak.type} streak</span>
+                    <span className="text-gray-500 ml-1">on {(adaptive.review as any).current_streak.direction}s</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2 mb-3">
                   <div className="bg-[#1f2937] rounded-xl p-2 text-center">
                     <div className="text-[10px] text-gray-500">Win Rate</div>
                     <div className={cn("text-xl font-bold font-mono", (adaptive.review.win_rate ?? 0) >= 50 ? "text-green-400" : "text-red-400")}>
@@ -247,7 +317,32 @@ function ConsolePageInner() {
                     <div className="text-[10px] text-gray-500">Reviewed</div>
                     <div className="text-xl font-bold font-mono text-gray-200">{adaptive.review.completed}</div>
                   </div>
+                  <div className="bg-[#1f2937] rounded-xl p-2 text-center">
+                    <div className="text-[10px] text-gray-500">Pending</div>
+                    <div className="text-xl font-bold font-mono text-blue-400">{adaptive.review.pending}</div>
+                  </div>
                 </div>
+
+                {/* Confidence calibration bands */}
+                {(adaptive.review as any).confidence_analysis?.length > 0 && (
+                  <div className="mb-3 space-y-1">
+                    <div className="text-[10px] text-gray-600 mb-1.5">Confidence vs Actual Win Rate</div>
+                    {(adaptive.review as any).confidence_analysis.map((band: any, i: number) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="text-[9px] text-gray-600 w-14 flex-shrink-0">{band.band}</span>
+                        <div className="flex-1 h-1.5 bg-[#1f2937] rounded-full overflow-hidden">
+                          <div className={cn("h-full rounded-full", band.actual_win_rate >= 55 ? "bg-green-500" : band.actual_win_rate >= 45 ? "bg-yellow-500" : "bg-red-500")}
+                            style={{ width: `${band.actual_win_rate}%` }} />
+                        </div>
+                        <span className={cn("text-[9px] font-mono w-8 text-right",
+                          band.actual_win_rate >= 55 ? "text-green-400" : band.actual_win_rate >= 45 ? "text-yellow-400" : "text-red-400")}>
+                          {band.actual_win_rate}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="space-y-1.5">
                   {adaptive.review.recent_predictions.slice(0, 5).map((p, i) => (
                     <div key={i} className="flex items-center justify-between border border-[#1f2937] rounded-lg px-2.5 py-1.5 text-xs">
