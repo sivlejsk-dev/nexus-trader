@@ -25,8 +25,10 @@ function ConsolePageInner() {
   const [providerSummary, setProviderSummary] = useState<string>("Checking data sources...");
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
   const [activeModel, setActiveModel] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     api.providers()
       .then((res) => {
         const active = res.providers.filter((p: any) => p.configured).map((p: any) => p.name).join(" → ");
@@ -173,12 +175,12 @@ function ConsolePageInner() {
           <div className="flex items-center gap-2 bg-[#111827] border border-[#1f2937] rounded-xl px-4 py-2.5 text-xs text-gray-500">
             <Zap size={12} className="text-blue-400 flex-shrink-0" />
             <span>Data: {providerSummary}</span>
-            {aiConfigured === true && activeModel && (
+            {mounted && aiConfigured === true && activeModel && (
               <span className="ml-auto flex items-center gap-1 text-green-500">
                 <BrainCircuit size={11} /> AI: {activeModel}
               </span>
             )}
-            {aiConfigured === false && (
+            {mounted && aiConfigured === false && (
               <span className="ml-auto flex items-center gap-1 text-yellow-500">
                 <AlertTriangle size={11} /> AI chat disabled — no API key
               </span>
@@ -186,7 +188,7 @@ function ConsolePageInner() {
           </div>
 
           {/* AI setup banner */}
-          {aiConfigured === false && (
+          {mounted && aiConfigured === false && (
             <div className="flex items-start gap-3 bg-yellow-900/10 border border-yellow-800/30 rounded-xl px-4 py-3">
               <AlertTriangle size={15} className="text-yellow-500 flex-shrink-0 mt-0.5" />
               <div className="flex-1 min-w-0">

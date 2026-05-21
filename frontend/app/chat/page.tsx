@@ -259,6 +259,7 @@ export default function ChatPage() {
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const [voiceUnlocked, setVoiceUnlocked] = useState(false);
   const [inIframe, setInIframe] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [muted, setMuted] = useState(false);
   const [listening, setListening] = useState(false);
@@ -311,8 +312,9 @@ export default function ChatPage() {
     }).catch(() => {});
   }, []);
 
-  // Detect iframe (Gitpod preview pane blocks speechSynthesis)
+  // Mark mounted + detect iframe — both must happen client-side only
   useEffect(() => {
+    setMounted(true);
     try { setInIframe(window.self !== window.top); } catch { setInIframe(true); }
   }, []);
 
@@ -691,7 +693,7 @@ export default function ChatPage() {
         </div>
 
         {/* Iframe voice warning — speechSynthesis blocked in embedded iframes */}
-        {inIframe && !muted && (
+        {mounted && inIframe && !muted && (
           <div className="mx-5 mb-2 flex items-center gap-3 bg-blue-900/10 border border-blue-800/30 rounded-xl px-4 py-2.5">
             <Volume2 size={14} className="text-blue-400 flex-shrink-0" />
             <div className="flex-1 min-w-0">
@@ -707,7 +709,7 @@ export default function ChatPage() {
         )}
 
         {/* Voice unlock prompt — shown once before first interaction */}
-        {!inIframe && !voiceUnlocked && !muted && (
+        {mounted && !inIframe && !voiceUnlocked && !muted && (
           <div className="mx-5 mb-2 flex items-center gap-3 bg-[#111827] border border-[#1f2937] rounded-xl px-4 py-2.5">
             <Volume2 size={14} className="text-blue-400 flex-shrink-0" />
             <span className="text-xs text-gray-400 flex-1">Tap to enable Nexus voice</span>
@@ -719,7 +721,7 @@ export default function ChatPage() {
         )}
 
         {/* AI setup banner — shown when no LLM key is configured */}
-        {aiConfigured === false && (
+        {mounted && aiConfigured === false && (
           <div className="mx-5 mb-2 flex items-start gap-3 bg-yellow-900/10 border border-yellow-800/30 rounded-xl px-4 py-3">
             <AlertTriangle size={14} className="text-yellow-500 flex-shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
@@ -747,7 +749,7 @@ export default function ChatPage() {
           </div>
         )}
 
-        {aiConfigured === true && activeModel && (
+        {mounted && aiConfigured === true && activeModel && (
           <div className="mx-5 mb-1 flex items-center gap-1.5 text-[10px] text-green-600">
             <BrainCircuit size={10} /> {activeModel} active
           </div>
