@@ -257,6 +257,8 @@ export default function ChatPage() {
   const [activeSymbol, setActiveSymbol] = useState<string | null>(null);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
   const [activeModel, setActiveModel] = useState<string | null>(null);
+  const [voiceUnlocked, setVoiceUnlocked] = useState(false);
+  const [inIframe, setInIframe] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [muted, setMuted] = useState(false);
   const [listening, setListening] = useState(false);
@@ -309,6 +311,20 @@ export default function ChatPage() {
     }).catch(() => {});
   }, []);
 
+  // Detect iframe (Gitpod preview pane blocks speechSynthesis)
+  useEffect(() => {
+    try { setInIframe(window.self !== window.top); } catch { setInIframe(true); }
+  }, []);
+
+  // Unlock voice on first user gesture
+  const unlockVoice = useCallback(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const utt = new SpeechSynthesisUtterance("");
+    utt.volume = 0;
+    window.speechSynthesis.speak(utt);
+    setVoiceUnlocked(true);
+  }, []);
+
   // Load memory-based suggestions on mount
   useEffect(() => {
     api.memorySummary().then((mem) => {
@@ -327,26 +343,47 @@ export default function ChatPage() {
   // TTS helper — always speaks unless muted
   const speak = useCallback((text: string) => {
     if (muted || typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
+
     const clean = text
-      .replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "")   // strip app commands
-      .replace(/```[\s\S]*?```/g, "")              // strip code blocks
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")     // markdown links → text
-      .replace(/[#*_`>]/g, "")                     // strip markdown symbols
+      .replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "")
+      .replace(/```[\s\S]*?```/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/[#*_`>|]/g, "")
       .replace(/\s+/g, " ")
       .trim();
     if (!clean) return;
-    // Split into sentences and queue as separate utterances for natural pacing
-    const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
-    sentences.forEach((sentence, i) => {
-      const utt = new SpeechSynthesisUtterance(sentence.trim());
-      utt.rate = 1.0;
-      utt.pitch = 0.95;
-      utt.volume = 1.0;
-      // Small pause between sentences
-      if (i > 0) utt.rate = 1.0;
-      window.speechSynthesis.speak(utt);
-    });
+
+    const doSpeak = () => {
+      window.speechSynthesis.cancel();
+      const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+      // Pick a voice — prefer a natural-sounding English voice
+      const voices = window.speechSynthesis.getVoices();
+      const preferred = voices.find(v =>
+        /en[-_](US|GB|AU)/i.test(v.lang) && /google|natural|premium|enhanced/i.test(v.name)
+      ) || voices.find(v => /en[-_](US|GB)/i.test(v.lang)) || voices[0];
+
+      sentences.forEach((sentence) => {
+        const utt = new SpeechSynthesisUtterance(sentence.trim());
+        if (preferred) utt.voice = preferred;
+        utt.rate = 1.0;
+        utt.pitch = 0.95;
+        utt.volume = 1.0;
+        window.speechSynthesis.speak(utt);
+      });
+    };
+
+    // Voices may not be loaded yet on first call — wait for them
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      doSpeak();
+    } else {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.onvoiceschanged = null;
+        doSpeak();
+      };
+      // Fallback: try anyway after 300ms if onvoiceschanged never fires
+      setTimeout(doSpeak, 300);
+    }
   }, [muted]);
 
   const send = useCallback(async (text: string) => {
@@ -356,6 +393,9 @@ export default function ChatPage() {
     setInput(""); setInterimText("");
     setLoading(true);
     try {
+      // Unlock TTS on first send (requires user gesture)
+      if (!voiceUnlocked) unlockVoice();
+
       const res: ChatResponse = await api.chat(msg, sessionId, voiceMode);
       setMessages((prev) => [...prev, {
         role: "assistant", content: res.response,
@@ -378,7 +418,7 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
     }
-  }, [loading, sessionId, loadSessions, voiceMode, speak]);
+  }, [loading, sessionId, loadSessions, voiceMode, speak, voiceUnlocked, unlockVoice]);
 
   // Voice recognition setup
   useEffect(() => {
@@ -649,6 +689,34 @@ export default function ChatPage() {
           )}
           <div ref={bottomRef} />
         </div>
+
+        {/* Iframe voice warning — speechSynthesis blocked in embedded iframes */}
+        {inIframe && !muted && (
+          <div className="mx-5 mb-2 flex items-center gap-3 bg-blue-900/10 border border-blue-800/30 rounded-xl px-4 py-2.5">
+            <Volume2 size={14} className="text-blue-400 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <span className="text-xs text-blue-300 font-medium">Voice blocked in preview pane. </span>
+              <span className="text-xs text-gray-400">Open in a full tab for Nexus to speak: </span>
+              <a href={typeof window !== "undefined" ? window.location.href : "#"}
+                target="_blank" rel="noopener noreferrer"
+                className="text-xs text-blue-400 hover:text-blue-300 underline">
+                Open in new tab ↗
+              </a>
+            </div>
+          </div>
+        )}
+
+        {/* Voice unlock prompt — shown once before first interaction */}
+        {!inIframe && !voiceUnlocked && !muted && (
+          <div className="mx-5 mb-2 flex items-center gap-3 bg-[#111827] border border-[#1f2937] rounded-xl px-4 py-2.5">
+            <Volume2 size={14} className="text-blue-400 flex-shrink-0" />
+            <span className="text-xs text-gray-400 flex-1">Tap to enable Nexus voice</span>
+            <button onClick={unlockVoice}
+              className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded-lg font-medium transition-colors">
+              Enable Voice
+            </button>
+          </div>
+        )}
 
         {/* AI setup banner — shown when no LLM key is configured */}
         {aiConfigured === false && (

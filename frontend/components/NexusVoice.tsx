@@ -56,22 +56,42 @@ interface Msg {
 // ── TTS helper ────────────────────────────────────────────────────────────────
 function ttsSpeak(text: string, muted: boolean) {
   if (muted || typeof window === "undefined" || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
+
   const clean = text
-    .replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "")   // strip app commands
-    .replace(/```[\s\S]*?```/g, "")              // strip code blocks
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")     // markdown links → text
-    .replace(/[*_`#>]/g, "")                     // strip markdown symbols
+    .replace(/\[\[NEXUS_CMD:[^\]]*\]\]/g, "")
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_`#>|]/g, "")
     .replace(/\s+/g, " ")
     .trim();
   if (!clean) return;
-  // Queue sentences as separate utterances for natural pacing
-  const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
-  sentences.forEach((sentence) => {
-    const utt = new SpeechSynthesisUtterance(sentence.trim());
-    utt.rate = 1.0; utt.pitch = 1.0; utt.volume = 1.0;
-    window.speechSynthesis.speak(utt);
-  });
+
+  const doSpeak = () => {
+    window.speechSynthesis.cancel();
+    const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v =>
+      /en[-_](US|GB|AU)/i.test(v.lang) && /google|natural|premium|enhanced/i.test(v.name)
+    ) || voices.find(v => /en[-_](US|GB)/i.test(v.lang)) || voices[0];
+
+    sentences.forEach((sentence) => {
+      const utt = new SpeechSynthesisUtterance(sentence.trim());
+      if (preferred) utt.voice = preferred;
+      utt.rate = 1.0; utt.pitch = 1.0; utt.volume = 1.0;
+      window.speechSynthesis.speak(utt);
+    });
+  };
+
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length > 0) {
+    doSpeak();
+  } else {
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.onvoiceschanged = null;
+      doSpeak();
+    };
+    setTimeout(doSpeak, 300);
+  }
 }
 
 // ── SimCard ───────────────────────────────────────────────────────────────────
