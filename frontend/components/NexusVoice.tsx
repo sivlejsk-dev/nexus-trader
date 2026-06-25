@@ -337,7 +337,7 @@ export function NexusVoice() {
   const [messages, setMessages]   = useState<Msg[]>([{
     id: "init",
     role: "assistant",
-    content: "I'm Nexus. Ask me about any stock, say 'simulate Apple 5 years', or ask me to predict a move. I'll speak my reasoning aloud in voice mode.",
+    content: "I'm Nexus. Ask me about any global stock, say 'analyze Toyota Japan', 'simulate Samsung Korea five years', or ask me to predict a move. I'll keep it simple and speak my reasoning in voice mode.",
     timestamp: new Date(),
   }]);
   const [input, setInput]         = useState("");
@@ -391,10 +391,10 @@ export function NexusVoice() {
         if (cmd.path) router.push(cmd.path);
         break;
       case "analyze":
-        if (cmd.symbol) router.push(`/analysis?symbol=${cmd.symbol}`);
+        if (cmd.symbol) router.push(`/console?symbol=${encodeURIComponent(cmd.symbol)}`);
         break;
       case "simulate":
-        if (cmd.symbol) router.push(`/analysis?symbol=${cmd.symbol}&years=${cmd.years ?? 5}`);
+        if (cmd.symbol) router.push(`/simulate?symbol=${encodeURIComponent(cmd.symbol)}&years=${cmd.years ?? 5}`);
         break;
       case "watchlist_add":
         if (cmd.symbol) {

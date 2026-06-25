@@ -63,14 +63,15 @@ class AdaptivePredictionService:
         bars: List[Dict[str, Any]],
         session_id: str = "console",
         event_intelligence: Optional[Dict[str, Any]] = None,
+        participation: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         symbol = symbol.upper()
         await self._score_due_predictions(symbol, bars)
 
         stats = await self._performance(symbol)
-        raw = self._score_current_setup(quote, technicals, patterns, event_intelligence)
+        raw = self._score_current_setup(quote, technicals, patterns, event_intelligence, participation)
         adjusted = self._apply_learning_adjustment(raw, stats)
-        await self._store_if_new(symbol, adjusted, quote, technicals, patterns, session_id, event_intelligence)
+        await self._store_if_new(symbol, adjusted, quote, technicals, patterns, session_id, event_intelligence, participation)
         updated_stats = await self._performance(symbol)
 
         return {
@@ -86,6 +87,7 @@ class AdaptivePredictionService:
         technicals: Dict[str, Any],
         patterns: Dict[str, Any],
         event_intelligence: Optional[Dict[str, Any]] = None,
+        participation: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         price = float(quote.get("price") or quote.get("close") or 0)
         bullish = 0.0
@@ -138,6 +140,29 @@ class AdaptivePredictionService:
         if squeeze.get("squeeze"):
             rationale.append("Bollinger squeeze is active, so direction may expand quickly after confirmation.")
             risks.append("Compression setups can break either direction.")
+
+        participation_data = participation or {}
+        if participation_data.get("available"):
+            pressure = float(participation_data.get("pressure_score") or 0)
+            conviction = float(participation_data.get("conviction") or 0)
+            weight = min(1.6, 0.75 + conviction)
+            if pressure >= 0.12:
+                bullish += pressure * weight * 2.0
+                rationale.append(
+                    "Estimated buy-side participation is leading, improving call outcome odds if price confirms."
+                )
+            elif pressure <= -0.12:
+                bearish += abs(pressure) * weight * 2.0
+                rationale.append(
+                    "Estimated sell-side participation is leading, improving put outcome odds if support breaks."
+                )
+            else:
+                risks.append("Buy/sell participation is balanced, so the directional edge is weaker.")
+
+            impact = participation_data.get("outcome_impact", {})
+            for risk in impact.get("risks", []):
+                if risk not in risks:
+                    risks.append(risk)
 
         event_composite = (event_intelligence or {}).get("composite", {})
         event_bias = event_composite.get("bias")
@@ -261,6 +286,7 @@ class AdaptivePredictionService:
         patterns: Dict[str, Any],
         session_id: str,
         event_intelligence: Optional[Dict[str, Any]] = None,
+        participation: Optional[Dict[str, Any]] = None,
     ) -> None:
         price = prediction.get("entry_price") or 0
         if price <= 0:
@@ -311,6 +337,7 @@ class AdaptivePredictionService:
                         "technicals": technicals,
                         "patterns_summary": patterns.get("summary", {}),
                         "event_intelligence": (event_intelligence or {}).get("composite", {}),
+                        "participation": participation or {},
                     }),
                     json.dumps(prediction.get("rationale", [])),
                 ),

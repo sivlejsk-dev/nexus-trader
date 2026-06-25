@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.nexus_core.conversation import conversation_engine
-from app.nexus_core.conversation import extract_symbols
+from app.nexus_core.conversation import extract_symbols, classify_intent
 from app.nexus_core.memory_store import (
     get_memory_store,
     list_sessions,
@@ -19,6 +19,7 @@ from app.nexus_core.reasoning import reasoning_engine
 from app.services.market_data import market_data_service
 from app.services.app_control import app_control_service
 from app.services.session_learning import session_learning_service
+from app.services.symbol_resolver import resolve_symbol
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -43,6 +44,9 @@ class ChatResponse(BaseModel):
     market_context: Optional[Dict[str, Any]] = None
     triggered_actions: Optional[List[str]] = None
     simulation: Optional[Dict[str, Any]] = None
+    what_if: Optional[Dict[str, Any]] = None
+    tutorial: Optional[Dict[str, Any]] = None
+    app_context: Optional[Dict[str, Any]] = None
     prediction_history: Optional[Dict[str, Any]] = None
     # App control
     app_commands: Optional[List[Dict[str, Any]]] = None        # safe, auto-execute
@@ -74,12 +78,14 @@ async def chat(req: ChatRequest):
     # "Talk me through NVDA calls" get live market data on the first turn.
     extracted_symbols = extract_symbols(req.message)
     symbol = req.symbol or (extracted_symbols[0] if extracted_symbols else None) or await memory.get_active_symbol()
+    if symbol:
+        symbol = resolve_symbol(symbol, context=req.message)["symbol"]
 
     # Fetch live market context
     market_ctx: Optional[Dict[str, Any]] = None
     if symbol:
         try:
-            market_ctx = await market_data_service.get_full_market_context(symbol)
+            market_ctx = await market_data_service.get_full_analysis(symbol, session_id=session_id)
         except Exception:
             pass
 
@@ -101,8 +107,26 @@ async def chat(req: ChatRequest):
             reasoning_result = r.to_dict()
 
     # ── App control: extract commands from response ──
-    all_cmds = app_control_service.extract(response_text)
+    # Only trust explicit commands embedded by Nexus. Natural-language inference
+    # on the assistant response can misread examples like "simulate ASML" as an
+    # instruction. Deterministic user-intent commands are added below.
+    all_cmds = [cmd for cmd in app_control_service.extract(response_text) if cmd.get("_source") == "explicit"]
     safe_cmds, critical_cmds = app_control_service.classify(all_cmds)
+    intent = metadata.get("intent") or classify_intent(req.message)
+    if symbol and not safe_cmds:
+        if intent in {"stock_analysis", "predict", "options_analysis", "best_option"}:
+            safe_cmds.append({"type": "analyze", "symbol": symbol, "label": f"Analyze {symbol}"})
+        elif intent == "simulate":
+            safe_cmds.append({"type": "simulate", "symbol": symbol, "years": 5, "label": f"Simulate {symbol}"})
+        elif intent == "event_analysis":
+            safe_cmds.append({"type": "navigate", "path": f"/events?symbol={symbol}", "label": f"Events for {symbol}"})
+        elif intent == "watchlist" and "add" in req.message.lower():
+            safe_cmds.append({"type": "watchlist_add", "symbol": symbol, "label": f"Track {symbol}"})
+    tutorial_meta = metadata.get("tutorial") or {}
+    if tutorial_meta.get("app_command"):
+        tutorial_cmd = tutorial_meta["app_command"]
+        if tutorial_cmd not in safe_cmds:
+            safe_cmds.append(tutorial_cmd)
 
     # Log all commands; critical ones await confirmation
     for cmd in safe_cmds:
@@ -118,12 +142,18 @@ async def chat(req: ChatRequest):
         user_message=req.message,
         assistant_response=response_text,
         symbol=symbol,
-        intent=metadata.get("intent", "general"),
+        intent=intent,
     )
 
     # ── Voice reasoning: always build a spoken summary when there's structured data ──
     voice_reasoning = None
-    if metadata.get("prediction_history"):
+    if market_ctx and market_ctx.get("decision"):
+        voice_reasoning = _build_decision_voice(market_ctx["decision"])
+    if metadata.get("tutorial"):
+        voice_reasoning = metadata["tutorial"].get("voice_reasoning") or voice_reasoning
+    elif metadata.get("what_if"):
+        voice_reasoning = _build_what_if_voice(metadata["what_if"])
+    elif metadata.get("prediction_history"):
         pred = metadata["prediction_history"]
         voice_reasoning = _build_voice_reasoning(pred, symbol)
     elif metadata.get("simulation"):
@@ -149,6 +179,9 @@ async def chat(req: ChatRequest):
         market_context=market_ctx,
         triggered_actions=metadata.get("triggered_actions", []),
         simulation=metadata.get("simulation"),
+        what_if=metadata.get("what_if"),
+        tutorial=metadata.get("tutorial"),
+        app_context=metadata.get("app_context"),
         prediction_history=metadata.get("prediction_history"),
         app_commands=safe_cmds if safe_cmds else None,
         pending_confirmations=pending_confirms if pending_confirms else None,
@@ -156,6 +189,37 @@ async def chat(req: ChatRequest):
         new_insights=new_insights if new_insights else None,
         tool_log=metadata.get("tool_log") or None,
     )
+
+
+def _build_what_if_voice(result: Dict[str, Any]) -> str:
+    symbol = result.get("symbol", "this symbol")
+    summary = result.get("summary") or f"I ran the what-if for {symbol}."
+    rr = result.get("risk_reward")
+    next_step = result.get("next_step", "")
+    risk_reward = f"Risk reward is {rr}." if rr is not None else "Risk reward is not available."
+    return f"{summary} {risk_reward} {next_step} This is informational only, not financial advice."
+
+
+def _build_decision_voice(decision: Dict[str, Any]) -> str:
+    """Build a concise spoken summary of the one-shot Nexus decision."""
+    symbol = decision.get("symbol") or "this symbol"
+    action = decision.get("action", "wait")
+    direction = decision.get("direction", "neutral")
+    confidence = decision.get("confidence_pct", 0)
+    reason = decision.get("reason", "")
+    next_step = decision.get("best_next_step", "")
+    risk = decision.get("risk", "")
+    parts = [
+        f"Nexus says {action} on {symbol}, with a {direction} bias and {confidence} percent confidence.",
+    ]
+    if reason:
+        parts.append(reason)
+    if next_step:
+        parts.append(next_step)
+    if risk:
+        parts.append(f"Main risk: {risk}")
+    parts.append("This is informational only, not financial advice.")
+    return " ".join(parts)
 
 
 def _build_simulation_voice(sim: Dict[str, Any]) -> str:
@@ -325,6 +389,15 @@ async def get_pending_commands(session_id: str):
 async def get_command_history(session_id: str):
     """Return recent command history for a session."""
     return {"commands": await app_control_service.history(session_id)}
+
+
+@router.get("/context/{session_id}")
+async def get_app_context(session_id: str):
+    """Return the compact app/user context Nexus uses for contextual guidance."""
+    from app.services.app_context import app_context_service
+    memory = get_memory_store(session_id)
+    active_symbol = await memory.get_active_symbol()
+    return await app_context_service.build(session_id, active_symbol)
 
 
 # ── Session insights ──────────────────────────────────────────────────────────

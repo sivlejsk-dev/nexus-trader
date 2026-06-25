@@ -21,6 +21,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.nexus_core.memory_store import MemoryStore
+from app.services.symbol_resolver import extract_global_symbols, resolve_symbol, supported_markets
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ _INTENT_PATTERNS: Dict[str, List[str]] = {
         r"\b(covered call|cash.secured put|iron condor|straddle|strangle|spread)\b",
     ],
     "stock_analysis": [
+        r"\b(analy[sz]e|check|look at|pull up|show me|tell me about)\b",
         r"\b(stock|share|equity|price|chart|technical|rsi|macd|moving average|sma|ema)\b",
         r"\b(support|resistance|trend|breakout|breakdown|volume|momentum)\b",
         r"\b(earnings|revenue|pe ratio|market cap|sector)\b",
@@ -74,6 +76,12 @@ _INTENT_PATTERNS: Dict[str, List[str]] = {
     "education": [
         r"\b(what is|explain|how does|teach|learn|understand|define|meaning of)\b",
     ],
+    "tutorial": [
+        r"\b(tutorial|teach me|walk me through|how do i use|guide me|show me how|next step)\b",
+    ],
+    "what_if": [
+        r"\b(what if|what-if|scenario|if .* goes? to|if .* hits?|risk.?reward|outcome)\b",
+    ],
 }
 
 # ── Year range extraction ─────────────────────────────────────────────────────
@@ -106,7 +114,7 @@ def extract_year_range(text: str) -> Optional[Tuple[int, int]]:
 
 # ── Symbol extraction ─────────────────────────────────────────────────────────
 
-_SYMBOL_RE = re.compile(r"\b([A-Z]{1,5})\b")
+_SYMBOL_RE = re.compile(r"\b([A-Z0-9]{1,8}(?:[-.][A-Z0-9]{1,5})?)\b")
 _COMMON_WORDS = {
     "I", "A", "AN", "THE", "IN", "ON", "AT", "TO", "FOR", "OF", "AND", "OR",
     "BUT", "IS", "ARE", "WAS", "BE", "DO", "IF", "IT", "MY", "ME", "WE",
@@ -117,6 +125,13 @@ _COMMON_WORDS = {
     "PUTS", "CALLS", "OPTIONS", "TALK", "CHAT", "ASK", "SHOW", "CHECK",
     "LOOK", "TELL", "HELP", "CAN", "YOU", "WHAT", "WHEN", "WHY", "HOW",
     "NOW", "NEXT", "BEST", "TRADE", "SETUP", "RISK",
+    "IF", "START", "TUTORIAL", "MODE", "GOES", "GO", "HITS", "HIT", "STOP", "WITH",
+    "ANALYZE", "ANALYSE", "SIMULATE", "JAPAN", "TOKYO", "KOREA", "LONDON",
+    "AMSTERDAM", "CANADA", "INDIA", "AUSTRALIA", "BRAZIL", "UK",
+    "TOYOTA", "SAMSUNG", "TENCENT", "NESTLE", "NOVARTIS", "RELIANCE",
+    "VODAFONE", "PETROBRAS", "SHOPIFY",
+    "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE",
+    "TEN", "YEAR", "YEARS",
 }
 
 # Well-known tickers to boost confidence
@@ -136,9 +151,13 @@ _KNOWN_TICKERS = {
 
 def extract_symbols(text: str) -> List[str]:
     """Extract likely ticker symbols from free text."""
+    global_symbols = extract_global_symbols(text)
     candidates = _SYMBOL_RE.findall(text.upper())
     symbols = []
+    symbols.extend(global_symbols)
     for c in candidates:
+        if c.isdigit():
+            continue
         if c in _KNOWN_TICKERS:
             symbols.append(c)
         elif c not in _COMMON_WORDS and len(c) >= 2:
@@ -149,6 +168,10 @@ def extract_symbols(text: str) -> List[str]:
 def classify_intent(text: str) -> str:
     """Return the primary intent of the user message."""
     text_lower = text.lower()
+    for priority in ("tutorial", "what_if"):
+        for pattern in _INTENT_PATTERNS.get(priority, []):
+            if re.search(pattern, text_lower):
+                return priority
     for intent, patterns in _INTENT_PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, text_lower):
@@ -165,12 +188,15 @@ You are not a chatbot. You are a trading partner with a persistent memory of eve
 
 ## Capabilities
 - **Live analysis**: RSI, MACD, Bollinger Bands, SMA/EMA, volume, support/resistance, candlestick patterns
+- **Global markets**: analyse US and international listings using Yahoo-style symbols like 7203.T for Toyota Japan, VOD.L for London, SHOP.TO for Toronto, ASML.AS for Amsterdam, 005930.KS for Korea
 - **Options expertise**: calls/puts, Greeks, IV rank, unusual flow, strike/expiry selection, spreads
 - **Historical simulation**: replay your prediction logic across any date range, score outcomes, identify what worked
+- **What-if simulation**: estimate trade outcomes from target, stop, position size, and option premium
 - **World event analysis**: wars, elections, Fed decisions, pandemics — explain how each type of event historically moves specific stocks and what options strategy fits
 - **Prediction with confidence**: make a clear directional call (CALL / PUT / NEUTRAL), state your confidence %, give a target price and stop, explain your reasoning step by step
 - **Reflection and learning**: when asked about past predictions, honestly review accuracy, explain what you got wrong, and describe how you've adjusted your logic
 - **Cross-session memory**: remember symbols the user cares about, their preferred style (aggressive/conservative), past scenarios discussed
+- **Guided tutorial mode**: teach users how to maximize Nexus step-by-step and move them through app features
 
 ## Autonomous Behavior
 When the user asks you to simulate a scenario (e.g. "simulate Apple from 1995 to 2000"), you:
@@ -186,6 +212,20 @@ When asked to predict, you:
 3. Cite 3-5 specific technical or fundamental reasons
 4. Name the key risk that could invalidate the thesis
 5. Suggest a specific options approach if relevant
+
+When the user asks about a non-US stock or market:
+1. Resolve the symbol into the local listing when possible
+2. Use the global market data tools before answering
+3. Say clearly when options-chain coverage is unavailable for that non-US listing
+4. Keep the answer simple: price, bias, confidence, key risk, next step
+
+When app/user context is provided:
+1. Use the active symbol, recent app actions, watchlist, and recent conversations instead of asking the user to repeat them
+2. Recommend the next best app feature based on what the user just did
+3. Keep guidance simple enough for voice use, but include the key risk
+
+When guided tutorial context is provided, teach exactly one step at a time and wait for the user to say next.
+When what-if context is provided, explain reward, risk, risk/reward, and the next action. State that it is a simplified scenario.
 
 ## Best-Option Workflow
 When the user asks for a trade idea, best option, or "what should I buy/sell today", you MUST call `get_best_option` immediately — do not answer from memory alone.
@@ -218,6 +258,7 @@ Trigger phrases (always call `get_best_option`):
 - When you're uncertain, say so and explain why — calibrated uncertainty is more useful than false confidence
 - Keep responses focused. Long analysis should use headers and bullets, not walls of text
 - For voice: keep sentences short and punchy. Avoid markdown in voice-mode responses
+- In voice mode, prefer one clear answer over a menu. If the user asks broadly, answer first and offer one next action.
 - Always offer the next logical step: "Want me to run the simulation?" or "Should I check the options chain?"
 
 ## Memory and Reflection
@@ -253,6 +294,9 @@ class NexusConversationEngine:
         simulation_context: Optional[Dict[str, Any]] = None,
         prediction_context: Optional[Dict[str, Any]] = None,
         world_events_context: Optional[List[Dict[str, Any]]] = None,
+        app_context: Optional[Dict[str, Any]] = None,
+        tutorial_context: Optional[Dict[str, Any]] = None,
+        what_if_context: Optional[Dict[str, Any]] = None,
         voice_mode: bool = False,
     ) -> List[Dict[str, str]]:
         """Build the full message list for the LLM with deep context injection."""
@@ -310,15 +354,30 @@ class NexusConversationEngine:
         # ── Live market context ──
         if market_context:
             sym = market_context.get("symbol", "")
-            price = market_context.get("price")
-            change_pct = market_context.get("change_pct")
+            quote = market_context.get("quote") or market_context
+            price = quote.get("price")
+            change_pct = quote.get("change_pct")
             tech = market_context.get("technicals") or {}
             pred = market_context.get("adaptive_prediction") or {}
             patterns = market_context.get("patterns") or {}
+            participation = market_context.get("participation") or {}
+            decision = market_context.get("decision") or {}
 
             lines = [f"## Live Market Data: {sym}"]
             if price:
                 lines.append(f"- Price: ${price:.2f}" + (f" ({change_pct:+.2f}% today)" if change_pct is not None else ""))
+            if decision:
+                lines.append(
+                    "\n## Nexus Decision"
+                    f"\n- Action: {decision.get('action', 'wait').upper()} | "
+                    f"Direction: {decision.get('direction', 'neutral').upper()} | "
+                    f"Confidence: {decision.get('confidence_pct', 0)}%"
+                )
+                lines.append(f"- Reason: {decision.get('reason', '')}")
+                if decision.get("best_next_step"):
+                    lines.append(f"- Next step: {decision['best_next_step']}")
+                if decision.get("risk"):
+                    lines.append(f"- Main risk: {decision['risk']}")
             if tech.get("rsi"):
                 lines.append(f"- RSI(14): {tech['rsi']:.1f}" + (" — overbought" if tech['rsi'] > 70 else " — oversold" if tech['rsi'] < 30 else ""))
             if tech.get("macd") is not None:
@@ -332,13 +391,27 @@ class NexusConversationEngine:
                 bull = (patterns.get("summary") or {}).get("bullish_signals", 0)
                 bear = (patterns.get("summary") or {}).get("bearish_signals", 0)
                 lines.append(f"- Pattern bias: {bias} ({bull} bullish signals, {bear} bearish signals)")
+            if participation.get("available"):
+                impact = participation.get("outcome_impact") or {}
+                lines.append(
+                    "- Participation: "
+                    f"{participation.get('pressure_label', 'balanced')} "
+                    f"({participation.get('buy_volume_pct')}% buy / {participation.get('sell_volume_pct')}% sell), "
+                    f"impact {impact.get('direction', 'neutral')}"
+                )
 
             # Inject current Nexus prediction
             if pred and pred.get("prediction"):
                 p = pred["prediction"]
                 lines.append(f"\n## Current Nexus Prediction for {sym}")
                 lines.append(f"- Direction: **{p.get('direction','').upper()}** | Confidence: {p.get('confidence',0)*100:.0f}%")
-                lines.append(f"- Target: ${p.get('target_price',0):.2f} | Stop: ${p.get('stop_loss',0):.2f}")
+                target = p.get("target_price")
+                stop = p.get("stop_loss")
+                lines.append(
+                    "- Target: "
+                    f"{f'${target:.2f}' if target else '—'} | Stop: "
+                    f"{f'${stop:.2f}' if stop else '—'}"
+                )
                 rationale = p.get("rationale", [])
                 if rationale:
                     lines.append("- Rationale: " + "; ".join(rationale[:3]))
@@ -351,6 +424,34 @@ class NexusConversationEngine:
                             lines.append(f"- Last lesson learned: {note}")
 
             ctx_blocks.append("\n".join(lines))
+
+        if app_context:
+            from app.services.app_context import app_context_service
+            block = app_context_service.to_prompt_block(app_context)
+            if block:
+                ctx_blocks.append(block)
+
+        if tutorial_context:
+            step = tutorial_context.get("step") or {}
+            ctx_blocks.append(
+                "## Guided Tutorial Mode\n"
+                f"- Step: {tutorial_context.get('step_index', 0) + 1}/{tutorial_context.get('total_steps', 0)}\n"
+                f"- Current lesson: {step.get('title')}\n"
+                f"- Goal: {step.get('goal')}\n"
+                f"- Example: {step.get('example')}\n"
+                "Teach one step at a time and guide the user to the correct app feature."
+            )
+
+        if what_if_context:
+            ctx_blocks.append(
+                "## What-If Simulation\n"
+                f"- Summary: {what_if_context.get('summary')}\n"
+                f"- Direction: {what_if_context.get('direction')}\n"
+                f"- Reward: {what_if_context.get('reward_pct')}% | Risk: {what_if_context.get('risk_pct')}% | "
+                f"Risk/reward: {what_if_context.get('risk_reward')}\n"
+                f"- Next step: {what_if_context.get('next_step')}\n"
+                "Explain this as a simplified scenario, not a guarantee."
+            )
 
         # ── Simulation context ──
         if simulation_context:
@@ -486,18 +587,95 @@ class NexusConversationEngine:
         self,
         user_message: str,
         market_context: Optional[Dict[str, Any]] = None,
+        simulation_context: Optional[Dict[str, Any]] = None,
+        prediction_context: Optional[Dict[str, Any]] = None,
+        tutorial_context: Optional[Dict[str, Any]] = None,
+        what_if_context: Optional[Dict[str, Any]] = None,
+        voice_mode: bool = False,
     ) -> str:
         """Return a structured fallback when no API key is configured."""
         symbols = extract_symbols(user_message)
         intent = classify_intent(user_message)
         symbol_str = symbols[0] if symbols else "the requested symbol"
 
-        if market_context and market_context.get("price"):
+        if tutorial_context:
+            return tutorial_context.get("response") or "Tutorial mode is ready. Say next to continue."
+
+        if what_if_context:
+            if voice_mode:
+                return (
+                    f"{what_if_context.get('summary')} "
+                    f"Risk reward is {what_if_context.get('risk_reward') or 'not available'}. "
+                    f"{what_if_context.get('next_step')} This is informational only."
+                )
+            option = what_if_context.get("option_outcome")
+            option_text = ""
+            if option:
+                option_text = (
+                    f"\n\nOption estimate: premium at risk **${option['premium_at_risk']:.2f}**; "
+                    f"estimated profit at target **${option['estimated_profit_at_target']:.2f}**; "
+                    f"estimated result at stop **${option['estimated_loss_at_stop']:.2f}**. "
+                    f"{option['note']}"
+                )
+            return (
+                f"**What-if for {what_if_context.get('symbol')}**\n\n"
+                f"{what_if_context.get('summary')}\n\n"
+                f"- Reward: **{what_if_context.get('reward_pct')}%**\n"
+                f"- Risk: **{what_if_context.get('risk_pct')}%**\n"
+                f"- Risk/reward: **{what_if_context.get('risk_reward') or '—'}**\n"
+                f"- Stock estimate on {what_if_context.get('position_size')} shares: "
+                f"reward **${what_if_context.get('stock_reward')}**, risk **${what_if_context.get('stock_risk')}**"
+                f"{option_text}\n\n"
+                f"Next step: {what_if_context.get('next_step')}\n\n"
+                "> ⚠️ **Disclaimer**: What-if scenarios are simplified research estimates, not financial advice."
+            )
+
+        if simulation_context:
+            sym = simulation_context.get("symbol", symbol_str)
+            wr = simulation_context.get("win_rate")
+            total = simulation_context.get("total_predictions", 0)
+            avg = simulation_context.get("avg_pnl_pct")
+            by_dir = simulation_context.get("by_direction") or {}
+            best_dir = None
+            if by_dir:
+                best_dir = max(
+                    ((k, v) for k, v in by_dir.items() if v.get("total", 0) > 0),
+                    key=lambda item: item[1].get("win_rate") or 0,
+                    default=None,
+                )
+            best_text = ""
+            if best_dir:
+                best_text = f" Best historical side was **{best_dir[0].upper()}** at {best_dir[1].get('win_rate')}%."
+            return (
+                f"I ran the historical simulation for **{sym}**. It produced **{total}** test windows. "
+                f"Overall win rate was **{wr if wr is not None else 'not enough data'}%**"
+                f"{f' with average P&L {avg:+.1f}%' if avg is not None else ''}.{best_text}\n\n"
+                "You can ask this by voice for any supported global ticker, for example: "
+                "`simulate Toyota Japan 5 years` or `analyze ASML Amsterdam`.\n\n"
+                "> ⚠️ **Disclaimer**: Backtests are research only. Past performance does not guarantee future results."
+            )
+
+        if prediction_context:
+            perf = prediction_context.get("performance") or {}
+            return (
+                f"For **{prediction_context.get('symbol', symbol_str)}**, Nexus has reviewed "
+                f"**{perf.get('total', 0)}** completed predictions with "
+                f"**{perf.get('win_rate', '—')}%** win rate. "
+                "Ask me by voice for a fresh prediction or a specific market check.\n\n"
+                "> ⚠️ **Disclaimer**: This is informational only, not financial advice."
+            )
+
+        quote = (market_context or {}).get("quote") or (market_context or {})
+        if market_context and quote.get("price"):
             symbol = market_context.get("symbol", symbol_str)
-            price = market_context.get("price")
-            change_pct = market_context.get("change_pct")
-            source = market_context.get("source", "market data")
+            price = quote.get("price")
+            change_pct = quote.get("change_pct")
+            source = quote.get("source", "market data")
             technicals = market_context.get("technicals", {}) or {}
+            pred = ((market_context.get("adaptive_prediction") or {}).get("prediction") or {})
+            participation = market_context.get("participation") or {}
+            decision = market_context.get("decision") or {}
+            event_intel = market_context.get("event_intelligence") or {}
             rsi = technicals.get("rsi")
             macd = technicals.get("macd")
             macd_signal = technicals.get("macd_signal")
@@ -516,6 +694,48 @@ class NexusConversationEngine:
                 macd_line = " MACD is above signal," if macd > macd_signal else " MACD is below signal,"
 
             option_angle = ""
+            prediction_line = ""
+            if pred:
+                prediction_line = (
+                    f"\n\nNexus local prediction is **{pred.get('direction', 'neutral').upper()}** "
+                    f"with **{int((pred.get('confidence') or 0) * 100)}%** confidence."
+                )
+            decision_line = ""
+            if decision:
+                decision_line = (
+                    f"Nexus decision: **{decision.get('action', 'wait').upper()}** "
+                    f"for **{decision.get('direction', 'neutral').upper()}**, "
+                    f"with **{decision.get('confidence_pct', 0)}%** confidence. "
+                    f"{decision.get('reason', '')} "
+                    f"Next step: {decision.get('best_next_step', '')}"
+                )
+                if voice_mode:
+                    decision_line = (
+                        f"Nexus says {decision.get('action', 'wait')} on {symbol}, "
+                        f"direction {decision.get('direction', 'neutral')}, "
+                        f"with {decision.get('confidence_pct', 0)} percent confidence. "
+                        f"{decision.get('reason', '')} "
+                        f"{decision.get('best_next_step', '')}"
+                    )
+            participation_line = ""
+            if participation.get("available"):
+                impact = participation.get("outcome_impact") or {}
+                participation_line = (
+                    f" Participation reads **{participation.get('pressure_label', 'balanced').replace('_', ' ')}**: "
+                    f"{participation.get('buy_volume_pct')}% estimated buying versus "
+                    f"{participation.get('sell_volume_pct')}% estimated selling. "
+                    f"{impact.get('description', '')}"
+                )
+            event_line = ""
+            composite = event_intel.get("composite") or {}
+            if intent == "event_analysis" and composite:
+                events = event_intel.get("events") or []
+                top_titles = [e.get("title", "") for e in events[:3] if e.get("title")]
+                event_line = (
+                    f"\n\nEvent intelligence reads **{composite.get('bias', 'neutral')}** "
+                    f"with **{int((composite.get('confidence') or 0) * 100)}%** confidence. "
+                    f"{' Top events: ' + '; '.join(top_titles) + '.' if top_titles else 'No configured real-time news source returned fresh headlines yet.'}"
+                )
             if intent == "options_analysis":
                 if tone == "constructively bullish":
                     option_angle = (
@@ -533,22 +753,34 @@ class NexusConversationEngine:
                         "A spread can make more sense than a naked long option when confidence is moderate."
                     )
 
+            if voice_mode and decision_line:
+                return (
+                    f"{decision_line} The last price is {price:.2f}"
+                    f"{f', {change_pct:+.2f}% on the day' if change_pct is not None else ''}. "
+                    "This is informational only, not financial advice."
+                )
+
             return (
+                f"{decision_line}\n\n" if decision_line else ""
+            ) + (
                 f"I have **{symbol}** from {source}: last price **${price:.2f}**"
                 f"{f', {change_pct:+.2f}% on the day' if change_pct is not None else ''}. "
                 f"My local read is **{tone}**.{rsi_line}{macd_line} and the moving-average context is "
                 f"{'available' if sma50 and sma200 else 'limited'}."
+                f"{participation_line}"
+                f"{prediction_line}"
+                f"{event_line}"
                 f"{option_angle}\n\n"
-                "The full conversational model is not enabled yet because `NEXUS_API_KEY` or `GROQ_API_KEY` is missing, "
-                "but the live data path is working and Nexus can still reason from local indicators.\n\n"
+                "You can ask by voice for global markets too: `analyze Toyota Japan`, `check Samsung Korea`, "
+                "or `simulate ASML Amsterdam five years`.\n\n"
                 "> ⚠️ **Disclaimer**: This analysis is for informational purposes only and does not constitute financial advice. Options trading involves substantial risk of loss."
             )
 
         if intent == "best_option":
             return (
-                f"I'd run the full best-option engine on **{symbol_str}** — scoring the options chain "
-                "by delta, IV, DTE, and liquidity to find the single best contract — but no AI API key is configured. "
-                "Set `NEXUS_API_KEY` or `GROQ_API_KEY` in your `.env` to enable full AI responses.\n\n"
+                f"I can analyze **{symbol_str}** and run local prediction/simulation from voice now. "
+                "For specific live options-chain contract selection, add Polygon or Tradier keys; "
+                "non-US options chains may not be available from the current providers.\n\n"
                 "> ⚠️ **Disclaimer**: This is for informational purposes only. Not financial advice."
             )
         if intent == "options_analysis":
@@ -565,8 +797,9 @@ class NexusConversationEngine:
                 "> ⚠️ **Disclaimer**: This is for informational purposes only. Not financial advice."
             )
         return (
-            "Nexus AI is ready, but no API key is configured. "
-            "Add `NEXUS_API_KEY` (OpenAI) or `GROQ_API_KEY` (Groq) to your `.env` file.\n\n"
+            "Nexus can handle simple voice requests like: analyze Toyota Japan, simulate Samsung Korea, "
+            "check ASML Amsterdam, or predict AAPL. For deeper conversational reasoning, add `NEXUS_API_KEY` "
+            "or `GROQ_API_KEY`.\n\n"
             "> ⚠️ **Disclaimer**: This is for informational purposes only. Not financial advice."
         )
 
@@ -596,6 +829,9 @@ class NexusConversationEngine:
         simulation_context: Optional[Dict[str, Any]] = None
         prediction_context: Optional[Dict[str, Any]] = None
         world_events_context: Optional[List[Dict[str, Any]]] = None
+        app_context: Optional[Dict[str, Any]] = None
+        tutorial_context: Optional[Dict[str, Any]] = None
+        what_if_context: Optional[Dict[str, Any]] = None
         triggered_actions: List[str] = []
 
         if symbol and intent in ("simulate", "backtest"):
@@ -700,12 +936,43 @@ class NexusConversationEngine:
             except Exception as e:
                 log.warning("%s: %s", "nexus_trader.auto_events_failed", str(e))
 
+        try:
+            from app.services.app_context import app_context_service
+            app_context = await app_context_service.build(memory.session_id, symbol, market_context)
+        except Exception as e:
+            log.warning("%s: %s", "nexus_trader.app_context_failed", str(e))
+
+        try:
+            from app.services.tutorial_mode import tutorial_mode_service
+            if intent == "tutorial" or tutorial_mode_service.is_tutorial_request(user_message):
+                tutorial_context = await tutorial_mode_service.build_response(user_message, memory, app_context)
+                triggered_actions.append(f"tutorial:{tutorial_context.get('step', {}).get('id')}")
+        except Exception as e:
+            log.warning("%s: %s", "nexus_trader.tutorial_failed", str(e))
+
+        try:
+            from app.services.what_if import what_if_service
+            if market_context and (intent == "what_if" or what_if_service.is_what_if_request(user_message)):
+                quote = market_context.get("quote") or market_context
+                scenario = what_if_service.parse_request(
+                    user_message,
+                    quote=quote,
+                    decision=market_context.get("decision"),
+                )
+                what_if_context = what_if_service.simulate(market_context.get("symbol", symbol or ""), scenario)
+                triggered_actions.append(f"what_if:{what_if_context.get('symbol')}")
+        except Exception as e:
+            log.warning("%s: %s", "nexus_trader.what_if_failed", str(e))
+
         # ── Build messages and call LLM ──────────────────────────────────────
         messages = await self._build_messages(
             user_message, memory, market_context,
             simulation_context=simulation_context,
             prediction_context=prediction_context,
             world_events_context=world_events_context,
+            app_context=app_context,
+            tutorial_context=tutorial_context,
+            what_if_context=what_if_context,
             voice_mode=voice_mode,
         )
 
@@ -728,7 +995,15 @@ class NexusConversationEngine:
 
         try:
             if not settings.nexus_api_key and not settings.groq_api_key:
-                response = self._fallback_response(user_message, market_context)
+                response = self._fallback_response(
+                    user_message,
+                    market_context,
+                    simulation_context=simulation_context,
+                    prediction_context=prediction_context,
+                    tutorial_context=tutorial_context,
+                    what_if_context=what_if_context,
+                    voice_mode=voice_mode,
+                )
             else:
                 async def _llm_fn(msgs, tools):
                     return await self._call_llm_with_tools(msgs, tools=tools)
@@ -736,7 +1011,7 @@ class NexusConversationEngine:
                 response, tool_log = await run_agentic_loop(
                     messages=messages,
                     call_llm_fn=_llm_fn,
-                    session_id=session_id,
+                    session_id=memory.session_id,
                 )
         except Exception as exc:
             log.warning("%s: %s", "nexus_trader.llm_primary_failed", str(exc))
@@ -744,7 +1019,15 @@ class NexusConversationEngine:
                 response = await self._call_llm(messages, use_groq=True)
             except Exception as exc2:
                 log.error("%s: %s", "nexus_trader.llm_all_failed", str(exc2))
-                response = self._fallback_response(user_message, market_context)
+                response = self._fallback_response(
+                    user_message,
+                    market_context,
+                    simulation_context=simulation_context,
+                    prediction_context=prediction_context,
+                    tutorial_context=tutorial_context,
+                    what_if_context=what_if_context,
+                    voice_mode=voice_mode,
+                )
 
         # Persist both turns
         await memory.add_turn("user", user_message, metadata={"intent": intent, "symbols": symbols})
@@ -757,6 +1040,9 @@ class NexusConversationEngine:
             "triggered_actions": triggered_actions,
             "simulation": simulation_context,
             "prediction_history": prediction_context,
+            "app_context": app_context,
+            "tutorial": tutorial_context,
+            "what_if": what_if_context,
             "tool_log": tool_log,  # passed to frontend for research panel
         }
         return response, metadata

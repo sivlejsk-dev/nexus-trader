@@ -12,7 +12,8 @@ GitHub repo
 ```
 
 The frontend proxies all `/api/*` requests to the backend via Next.js rewrites —
-no CORS issues, no API URL exposed to the browser.
+no CORS issues, no API URL exposed to the browser. In Render, the proxy uses
+the backend service's private `host:port`, injected by the Blueprint.
 
 ---
 
@@ -40,7 +41,9 @@ git push origin main
 2. Connect your GitHub/GitLab account and select the `nexus-trader` repo
 3. Render detects `render.yaml` automatically — click **Apply**
 4. For every `sync: false` environment variable, Render will prompt you to enter
-   the value before deploying. Fill in at minimum:
+   the value before deploying. The app can boot without keys by falling back to
+   local analysis and delayed Yahoo Finance market data, but fill in the keys
+   below for the full Nexus experience:
 
    | Variable | Where to get it |
    |---|---|
@@ -59,40 +62,13 @@ git push origin main
    | `BRAVE_API_KEY` | [api.search.brave.com](https://api.search.brave.com) |
    | `NEWS_API_KEY` | [newsapi.org](https://newsapi.org) |
 
-5. Click **Deploy** — both services build in parallel (~3–5 min first time)
+5. Click **Deploy** — both services build in parallel. The frontend receives
+   `BACKEND_API_HOSTPORT` from the backend service automatically and proxies
+   `/api/*` over Render's private network on the first launch.
 
 ---
 
-## Step 3 — Wire the URLs together
-
-After the first deploy, Render assigns permanent URLs:
-
-- Backend: `https://nexus-backend.onrender.com`
-- Frontend: `https://nexus-frontend.onrender.com`
-
-**Update two places in `render.yaml`** with your actual URLs, then redeploy:
-
-```yaml
-# Backend service — CORS_ORIGINS
-- key: CORS_ORIGINS
-  value: '["https://nexus-frontend.onrender.com"]'   # ← your frontend URL
-
-# Frontend service — BACKEND_API_URL (both buildArgs and envVars)
-- key: BACKEND_API_URL
-  value: https://nexus-backend.onrender.com           # ← your backend URL
-```
-
-```bash
-git add render.yaml
-git commit -m "Set production URLs"
-git push origin main
-```
-
-Render auto-deploys on every push to `main`.
-
----
-
-## Step 4 — Verify the deployment
+## Step 3 — Verify the deployment
 
 ```bash
 # Backend health check
@@ -159,7 +135,8 @@ in the Render dashboard and are never stored in the repo.
 
 | Variable | Required | Description |
 |---|---|---|
-| `BACKEND_API_URL` | yes | URL of the backend service — read at server startup by Next.js rewrites |
+| `BACKEND_API_HOSTPORT` | yes | Render-injected private backend `host:port` used by Next.js rewrites |
+| `BACKEND_API_URL` | optional | Public or private backend URL override; useful outside Render |
 | `NODE_ENV` | yes | Must be `production` |
 
 ---

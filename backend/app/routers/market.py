@@ -4,11 +4,13 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from app.services.market_data import market_data_service
 from app.services.pattern_recognition import pattern_engine
 from app.services.adaptive_predictions import adaptive_prediction_service
 from app.services.event_intelligence import event_intelligence_service
+from app.services.symbol_resolver import resolve_symbol, supported_markets
 from app.services.historical_simulation import run_simulation, get_events_for_range
 from app.services.model_refinement import model_refinement_service
 from app.services.signal_optimizer import signal_optimizer
@@ -16,6 +18,14 @@ from app.nexus_core.reasoning import reasoning_engine
 from app.core.config import settings
 
 router = APIRouter(prefix="/market", tags=["market"])
+
+
+class WhatIfRequest(BaseModel):
+    direction: str = "call"
+    target_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    position_size: int = 100
+    option_premium: Optional[float] = None
 
 
 @router.get("/providers")
@@ -71,10 +81,23 @@ async def get_market_providers():
     }
 
 
+@router.get("/global-markets")
+async def get_global_markets():
+    """Markets Nexus can resolve through Yahoo Finance-style symbols."""
+    return {"markets": supported_markets()}
+
+
+@router.get("/resolve/{symbol}")
+async def resolve_market_symbol(symbol: str, context: str = ""):
+    """Resolve a user symbol or company alias into the ticker Nexus will query."""
+    return resolve_symbol(symbol, context=context)
+
+
 @router.get("/quote/{symbol}")
 async def get_quote(symbol: str):
     """Current quote for a symbol."""
-    data = await market_data_service.get_quote(symbol.upper())
+    sym = resolve_symbol(symbol)["symbol"]
+    data = await market_data_service.get_quote(sym)
     if data.get("error"):
         raise HTTPException(status_code=503, detail=data["error"])
     return data
@@ -87,17 +110,19 @@ async def get_history(
     timespan: str = Query(default="day", pattern="^(day|week|month)$"),
 ):
     """Historical OHLCV bars. years=50 fetches from market inception where available."""
-    bars = await market_data_service.get_historical_ohlcv(symbol.upper(), years=years, timespan=timespan)
+    sym = resolve_symbol(symbol)["symbol"]
+    bars = await market_data_service.get_historical_ohlcv(sym, years=years, timespan=timespan)
     if not bars:
         raise HTTPException(status_code=404, detail=f"No historical data found for {symbol}")
-    return {"symbol": symbol.upper(), "timespan": timespan, "count": len(bars), "bars": bars}
+    return {"symbol": sym, "timespan": timespan, "count": len(bars), "bars": bars}
 
 
 @router.get("/technicals/{symbol}")
 async def get_technicals(symbol: str):
     """Key technical indicators: RSI, MACD, SMA50, SMA200."""
-    data = await market_data_service.get_technicals(symbol.upper())
-    return {"symbol": symbol.upper(), "technicals": data}
+    sym = resolve_symbol(symbol)["symbol"]
+    data = await market_data_service.get_technicals(sym)
+    return {"symbol": sym, "technicals": data}
 
 
 @router.get("/patterns/{symbol}")
@@ -106,10 +131,11 @@ async def get_patterns(
     years: int = Query(default=2, ge=1, le=10),
 ):
     """Run full pattern recognition on historical data."""
-    bars = await market_data_service.get_historical_ohlcv(symbol.upper(), years=years)
+    sym = resolve_symbol(symbol)["symbol"]
+    bars = await market_data_service.get_historical_ohlcv(sym, years=years)
     if not bars:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
-    result = pattern_engine.analyze(bars, symbol=symbol.upper())
+    result = pattern_engine.analyze(bars, symbol=sym)
     return result
 
 
@@ -122,62 +148,40 @@ async def get_full_analysis(
     Combined quote + technicals + pattern recognition + structured reasoning.
     This is the primary endpoint for the visual console.
     """
-    import asyncio
+    return await market_data_service.get_full_analysis(symbol, session_id=session_id)
 
-    quote_task = market_data_service.get_quote(symbol.upper())
-    tech_task = market_data_service.get_technicals(symbol.upper())
-    hist_task = market_data_service.get_historical_ohlcv(symbol.upper(), years=2)
-    intelligence_task = event_intelligence_service.build_symbol_intelligence(symbol.upper(), fresh=True)
 
-    quote, technicals, bars, event_intelligence = await asyncio.gather(
-        quote_task, tech_task, hist_task, intelligence_task, return_exceptions=True
-    )
+@router.get("/decision/{symbol}")
+async def get_nexus_decision(
+    symbol: str,
+    session_id: str = Query(default="console", description="Prediction memory namespace"),
+):
+    """One simple Nexus action plan for voice and quick UI checks."""
+    analysis = await market_data_service.get_full_analysis(symbol, session_id=session_id)
+    decision = analysis.get("decision")
+    if not decision:
+        raise HTTPException(status_code=503, detail=f"No decision available for {symbol}")
+    return decision
 
-    result: Dict[str, Any] = {"symbol": symbol.upper()}
 
-    if not isinstance(quote, Exception):
-        result["quote"] = quote
-    if not isinstance(technicals, Exception):
-        result["technicals"] = technicals
-    if not isinstance(event_intelligence, Exception):
-        result["event_intelligence"] = event_intelligence
+@router.post("/what-if/{symbol}")
+async def get_what_if(symbol: str, req: WhatIfRequest):
+    """Simplified risk/reward outcome scenario from current price to target/stop."""
+    from app.services.what_if import what_if_service
 
-    patterns_data = {}
-    if not isinstance(bars, Exception) and bars:
-        patterns_data = pattern_engine.analyze(bars, symbol=symbol.upper())
-        result["patterns"] = patterns_data
-        # Return last 252 bars (1 year) for charting
-        result["chart_bars"] = bars[-252:]
-
-    # Structured reasoning
-    if not isinstance(technicals, Exception) and technicals:
-        price = result.get("quote", {}).get("price", 0)
-        volume = result.get("quote", {}).get("volume", 0)
-        reasoning = reasoning_engine.analyze_technicals({
-            **technicals,
-            "price": price,
-            "volume": volume,
-        })
-        result["reasoning"] = reasoning.to_dict()
-
-    if (
-        result.get("quote")
-        and result["quote"].get("price")
-        and not isinstance(technicals, Exception)
-        and not isinstance(bars, Exception)
-        and bars
-    ):
-        result["adaptive_prediction"] = await adaptive_prediction_service.build_prediction(
-            symbol=symbol.upper(),
-            quote=result["quote"],
-            technicals=technicals if isinstance(technicals, dict) else {},
-            patterns=patterns_data,
-            bars=bars,
-            session_id=session_id,
-            event_intelligence=event_intelligence if isinstance(event_intelligence, dict) else None,
-        )
-
-    return result
+    analysis = await market_data_service.get_full_analysis(symbol)
+    quote = analysis.get("quote") or {}
+    if not quote.get("price"):
+        raise HTTPException(status_code=404, detail=f"No current price available for {symbol}")
+    scenario = {
+        "direction": req.direction,
+        "current_price": quote.get("price"),
+        "target_price": req.target_price,
+        "stop_price": req.stop_price,
+        "position_size": req.position_size,
+        "option_premium": req.option_premium,
+    }
+    return what_if_service.simulate(analysis.get("symbol", symbol.upper()), scenario)
 
 
 @router.get("/events/world")

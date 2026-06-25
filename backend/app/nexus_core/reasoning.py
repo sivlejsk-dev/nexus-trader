@@ -157,6 +157,41 @@ class MarketReasoningEngine:
                 ))
                 signals.append("volume_spike")
 
+        participation = data.get("participation") or {}
+        if participation.get("available"):
+            pressure = float(participation.get("pressure_score") or 0)
+            buy_pct = float(participation.get("buy_volume_pct") or 0)
+            sell_pct = float(participation.get("sell_volume_pct") or 0)
+            conviction = float(participation.get("conviction") or 0)
+            if pressure >= 0.12:
+                steps.append(ReasoningStep(
+                    description="Estimated buy-side participation is leading",
+                    evidence=[
+                        f"Estimated buy volume {buy_pct:.1f}% vs sell volume {sell_pct:.1f}%",
+                        f"Participation pressure score {pressure:.3f}",
+                    ],
+                    confidence=min(0.78, 0.55 + conviction * 0.25),
+                    mode=ReasoningMode.INDUCTIVE,
+                ))
+                signals.append("bullish_participation")
+            elif pressure <= -0.12:
+                steps.append(ReasoningStep(
+                    description="Estimated sell-side participation is leading",
+                    evidence=[
+                        f"Estimated sell volume {sell_pct:.1f}% vs buy volume {buy_pct:.1f}%",
+                        f"Participation pressure score {pressure:.3f}",
+                    ],
+                    confidence=min(0.78, 0.55 + conviction * 0.25),
+                    mode=ReasoningMode.INDUCTIVE,
+                ))
+                signals.append("bearish_participation")
+            else:
+                risks.append("Buy/sell participation is balanced, reducing directional conviction.")
+
+            for risk in participation.get("outcome_impact", {}).get("risks", []):
+                if risk not in risks:
+                    risks.append(risk)
+
         price = data.get("price")
         sma_50 = data.get("sma_50")
         sma_200 = data.get("sma_200")

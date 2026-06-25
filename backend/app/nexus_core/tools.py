@@ -13,7 +13,7 @@ The agentic loop:
 Tools available to Nexus:
   web_search          — search the internet
   fetch_page          — read any URL
-  get_stock_price     — current quote + technicals
+  get_stock_price     — current quote + technicals for US and global Yahoo symbols
   run_simulation      — historical simulation on a symbol
   optimize_weights    — run the signal optimizer
   research_symbol     — deep symbol research (news + filings)
@@ -83,13 +83,13 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_stock_price",
-            "description": "Get the current price, technicals (RSI, MACD, Bollinger Bands), and Nexus's current prediction for a stock symbol.",
+            "description": "Get the current price, technicals, participation pressure, and Nexus's current prediction for a US or global stock symbol. Supports Yahoo-style global tickers like 7203.T, VOD.L, SHOP.TO, ASML.AS, 005930.KS.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "symbol": {
                         "type": "string",
-                        "description": "Stock ticker symbol, e.g. AAPL, TSLA, SPY.",
+                        "description": "Stock ticker symbol, e.g. AAPL, TSLA, SPY, 7203.T, VOD.L, SHOP.TO, ASML.AS.",
                     },
                 },
                 "required": ["symbol"],
@@ -107,7 +107,7 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "symbol": {"type": "string", "description": "Stock ticker symbol."},
+                    "symbol": {"type": "string", "description": "Stock ticker symbol, including global suffixes such as 7203.T or VOD.L."},
                     "years": {"type": "integer", "description": "Years of history to simulate (1-20).", "default": 5},
                     "horizon_days": {"type": "integer", "description": "Prediction horizon in days (5-60).", "default": 20},
                 },
@@ -304,21 +304,24 @@ async def dispatch_tool(
             label = f"📄 Read: {args['url'][:60]}"
 
         elif name == "get_stock_price":
-            sym = args["symbol"].upper()
+            sym = market_data_service.resolve_symbol(args["symbol"])["symbol"]
             data = await market_data_service.get_full_analysis(sym)
+            pred = (data.get("adaptive_prediction", {}).get("prediction") or {})
             result = {
                 "symbol": sym,
+                "resolved_symbol": data.get("resolved_symbol"),
                 "price": data.get("quote", {}).get("price"),
                 "change_pct": data.get("quote", {}).get("change_pct"),
                 "rsi": data.get("technicals", {}).get("rsi"),
                 "macd": data.get("technicals", {}).get("macd"),
-                "direction": data.get("adaptive_prediction", {}).get("direction"),
-                "confidence": data.get("adaptive_prediction", {}).get("confidence"),
+                "participation": data.get("participation"),
+                "direction": pred.get("direction"),
+                "confidence": pred.get("confidence"),
             }
             label = f"📈 Got price: {sym}"
 
         elif name == "run_simulation":
-            sym = args["symbol"].upper()
+            sym = market_data_service.resolve_symbol(args["symbol"])["symbol"]
             years = min(int(args.get("years", 5)), 20)
             hz = min(int(args.get("horizon_days", 20)), 60)
             bars = await market_data_service.get_historical_ohlcv(sym, years=years)
@@ -337,7 +340,7 @@ async def dispatch_tool(
             label = f"⚙️ Simulated: {sym} {years}Y"
 
         elif name == "optimize_weights":
-            sym = args["symbol"].upper()
+            sym = market_data_service.resolve_symbol(args["symbol"])["symbol"]
             years = min(int(args.get("years", 5)), 20)
             gens = min(int(args.get("generations", 20)), 100)
             bars = await market_data_service.get_historical_ohlcv(sym, years=years)
@@ -366,8 +369,9 @@ async def dispatch_tool(
             label = f"🧬 Optimized: {sym} ({gens} generations)"
 
         elif name == "research_symbol":
-            result = await research_symbol(args["symbol"].upper())
-            label = f"🔬 Researched: {args['symbol'].upper()}"
+            sym = market_data_service.resolve_symbol(args["symbol"])["symbol"]
+            result = await research_symbol(sym)
+            label = f"🔬 Researched: {sym}"
 
         elif name == "research_strategy":
             result = await research_strategy(args["topic"])
@@ -378,13 +382,14 @@ async def dispatch_tool(
             label = f"🌐 Researched event: {args['event'][:50]}"
 
         elif name == "get_model_stats":
-            result = await get_model_stats(args["symbol"].upper())
-            label = f"📊 Model stats: {args['symbol'].upper()}"
+            sym = market_data_service.resolve_symbol(args["symbol"])["symbol"]
+            result = await get_model_stats(sym)
+            label = f"📊 Model stats: {sym}"
 
         elif name == "get_best_option":
             from app.services.best_option import get_best_option
             import asyncio
-            symbols = [s.upper() for s in args.get("symbols", ["SPY"])]
+            symbols = [market_data_service.resolve_symbol(s)["symbol"] for s in args.get("symbols", ["SPY"])]
             include_research = args.get("include_research", True)
 
             # Run all symbols concurrently

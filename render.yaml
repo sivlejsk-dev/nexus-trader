@@ -10,6 +10,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     plan: free
+    autoDeploy: true
     healthCheckPath: /health
 
     disk:
@@ -24,7 +25,6 @@ services:
       - key: ENVIRONMENT
         value: production
 
-      # Replace with your actual frontend URL after first deploy
       - key: CORS_ORIGINS
         value: '["https://nexus-frontend.onrender.com"]'
 
@@ -78,13 +78,16 @@ services:
     dockerfilePath: ./frontend/Dockerfile
     dockerContext: ./frontend
     plan: free
+    autoDeploy: true
     healthCheckPath: /
 
     envVars:
-      # Next.js rewrites read this env var at server startup — no build-time
-      # baking needed. Update to your actual backend URL after first deploy.
-      - key: BACKEND_API_URL
-        value: https://nexus-backend.onrender.com
+      # Next.js rewrites proxy /api/* to FastAPI over Render's private network.
+      - key: BACKEND_API_HOSTPORT
+        fromService:
+          type: web
+          name: nexus-backend
+          property: hostport
 
       - key: NODE_ENV
         value: production

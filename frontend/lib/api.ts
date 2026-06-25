@@ -81,11 +81,58 @@ export interface PatternAnalysis {
   summary: { bias: string; pattern_count: number; bullish_signals: number; bearish_signals: number; top_pattern: string | null };
 }
 
+export interface MarketParticipation {
+  symbol: string;
+  available: boolean;
+  window_bars: number;
+  method: string;
+  estimated_buy_volume?: number;
+  estimated_sell_volume?: number;
+  total_volume?: number;
+  buy_volume_pct?: number;
+  sell_volume_pct?: number;
+  net_volume?: number;
+  pressure_score?: number;
+  pressure_label?: string;
+  conviction?: number;
+  buyer_seller_ratio?: number | null;
+  relative_volume?: number;
+  acceleration?: number;
+  latest_close_position?: number;
+  description?: string;
+  outcome_impact?: {
+    direction: "bullish" | "bearish" | "neutral";
+    bias_delta: number;
+    description: string;
+    risks: string[];
+  };
+}
+
+export interface NexusDecision {
+  symbol: string;
+  action: "buy" | "wait" | "avoid" | "watch";
+  direction: "call" | "put" | "neutral";
+  confidence: number;
+  confidence_pct: number;
+  reason: string;
+  target?: number | null;
+  stop?: number | null;
+  entry_price?: number | null;
+  best_next_step: string;
+  risk: string;
+  drivers: string[];
+  warnings: string[];
+  contradictions: number;
+  disclaimer: string;
+}
+
 export interface FullAnalysis {
   symbol: string;
   quote?: Quote;
   technicals?: Technicals;
   patterns?: PatternAnalysis;
+  participation?: MarketParticipation;
+  decision?: NexusDecision;
   chart_bars?: OHLCVBar[];
   reasoning?: {
     conclusion: string;
@@ -184,6 +231,9 @@ export interface ChatResponse {
   market_context?: Record<string, unknown>;
   triggered_actions?: string[];
   simulation?: SimulationResult;
+  what_if?: WhatIfResult;
+  tutorial?: TutorialState;
+  app_context?: AppContext;
   prediction_history?: PredictionHistoryResponse;
   // New fields
   app_commands?: AppCommand[];
@@ -191,6 +241,63 @@ export interface ChatResponse {
   voice_reasoning?: string;
   new_insights?: SessionInsight[];
   tool_log?: ToolCall[];
+}
+
+export interface WhatIfResult {
+  symbol: string;
+  available: boolean;
+  direction?: "call" | "put" | "neutral";
+  current_price?: number;
+  target_price?: number;
+  stop_price?: number;
+  reward_pct?: number;
+  risk_pct?: number;
+  risk_reward?: number | null;
+  stock_reward?: number;
+  stock_risk?: number;
+  position_size?: number;
+  recommendation?: "favorable" | "mixed" | "unfavorable";
+  summary: string;
+  next_step?: string;
+  option_outcome?: {
+    contracts: number;
+    premium: number;
+    premium_at_risk: number;
+    estimated_value_at_target: number;
+    estimated_value_at_stop: number;
+    estimated_profit_at_target: number;
+    estimated_loss_at_stop: number;
+    note: string;
+  } | null;
+  disclaimer?: string;
+}
+
+export interface TutorialState {
+  active: boolean;
+  step_index: number;
+  total_steps: number;
+  complete_pct: number;
+  step: {
+    id: string;
+    title: string;
+    page: string;
+    goal: string;
+    example: string;
+    why: string;
+  };
+  response: string;
+  voice_reasoning: string;
+}
+
+export interface AppContext {
+  session_id: string;
+  active_symbol?: string;
+  recent_symbols: string[];
+  watchlist: string[];
+  recent_turns: unknown[];
+  recent_actions: Array<Record<string, unknown>>;
+  market_snapshot?: Record<string, unknown> | null;
+  summary: string;
 }
 
 export interface ToolCall {
@@ -269,6 +376,13 @@ export interface MarketProvidersResponse {
     note?: string;
   }>;
   active_fallback_order: string[];
+}
+
+export interface GlobalMarket {
+  region: string;
+  exchange: string;
+  suffix: string;
+  example: string;
 }
 
 // ── Historical Simulation ─────────────────────────────────────────────────────
@@ -584,6 +698,13 @@ export const api = {
   // Market
   providers: () => req<MarketProvidersResponse>("/market/providers"),
 
+  globalMarkets: () => req<{ markets: GlobalMarket[] }>("/market/global-markets"),
+
+  resolveSymbol: (symbol: string, context = "") =>
+    req<{ symbol: string; input: string; resolved: boolean; market?: Record<string, string> | null }>(
+      `/market/resolve/${encodeURIComponent(symbol)}?context=${encodeURIComponent(context)}`
+    ),
+
   quote: (symbol: string) => req<Quote>(`/market/quote/${symbol}`),
 
   history: (symbol: string, years = 5, timespan = "day") =>
@@ -591,6 +712,9 @@ export const api = {
 
   analysis: (symbol: string, sessionId = "console") =>
     req<FullAnalysis>(`/market/analysis/${symbol}?session_id=${encodeURIComponent(sessionId)}`),
+
+  decision: (symbol: string, sessionId = "console") =>
+    req<NexusDecision>(`/market/decision/${symbol}?session_id=${encodeURIComponent(sessionId)}`),
 
   patterns: (symbol: string, years = 2) =>
     req<PatternAnalysis>(`/market/patterns/${symbol}?years=${years}`),
@@ -638,9 +762,24 @@ export const api = {
       recent_predictions: Array<{ symbol: string; direction: string; outcome: string; pnl_pct?: number; date: string }>;
     }>("/chat/memory/summary"),
 
+  appContext: (sessionId: string) =>
+    req<AppContext>(`/chat/context/${sessionId}`),
+
   // Historical simulation
   simulate: (symbol: string, years = 5, horizonDays = 20) =>
     req<SimulationResult>(`/market/simulate/${symbol}?years=${years}&horizon_days=${horizonDays}&sample_every=10`),
+
+  whatIf: (symbol: string, params: {
+    direction?: string;
+    target_price?: number | null;
+    stop_price?: number | null;
+    position_size?: number;
+    option_premium?: number | null;
+  }) =>
+    req<WhatIfResult>(`/market/what-if/${symbol}`, {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
 
   worldEvents: (start: string, end: string) =>
     req<{ events: WorldEvent[] }>(`/market/events/world?start=${start}&end=${end}`),

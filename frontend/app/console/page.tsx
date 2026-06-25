@@ -5,14 +5,14 @@ import { useSearchParams } from "next/navigation";
 import {
   Search, RefreshCw, TrendingUp, TrendingDown, Minus,
   AlertTriangle, ChevronDown, ChevronUp, Zap, BarChart2,
-  BrainCircuit, Target, History, Globe, ExternalLink,
+  BrainCircuit, Target, History, Globe, ExternalLink, Users,
 } from "lucide-react";
 import { api, type FullAnalysis } from "@/lib/api";
 import { AdvancedChart } from "@/components/charts/AdvancedChart";
 import { StrategyRadarChart } from "@/components/charts/OptionsChart";
 import { cn, fmtPrice, fmtPct, fmtVolume, changeColor, confidenceColor, directionColor } from "@/lib/utils";
 
-const QUICK_SYMBOLS = ["AAPL", "TSLA", "NVDA", "SPY", "QQQ", "MSFT", "AMZN", "META"];
+const QUICK_SYMBOLS = ["AAPL", "TSLA", "NVDA", "SPY", "7203.T", "ASML.AS", "VOD.L", "SHOP.TO"];
 
 function ConsolePageInner() {
   const searchParams = useSearchParams();
@@ -71,6 +71,8 @@ function ConsolePageInner() {
   const patterns = data?.patterns;
   const reasoning = data?.reasoning;
   const adaptive = data?.adaptive_prediction;
+  const participation = data?.participation;
+  const decision = data?.decision;
   const bars = data?.chart_bars || [];
   const eventIntel = (data as any)?.event_intelligence;
 
@@ -214,6 +216,59 @@ function ConsolePageInner() {
                   </div>
                 </div>
                 <p className="text-[10px] text-gray-600 mt-2">After adding the key, restart the backend service.</p>
+              </div>
+            </div>
+          )}
+
+          {/* Nexus decision */}
+          {decision && (
+            <div className={cn("border rounded-xl p-4",
+              decision.action === "buy" ? "bg-green-900/10 border-green-800/40" :
+              decision.action === "avoid" ? "bg-red-900/10 border-red-800/40" :
+              decision.action === "watch" ? "bg-blue-900/10 border-blue-800/40" :
+              "bg-[#111827] border-[#1f2937]")}>
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-white mb-2">
+                    <BrainCircuit size={15} className="text-cyan-400" />
+                    Nexus Decision
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className={cn("text-3xl font-bold uppercase tracking-normal",
+                      decision.action === "buy" ? "text-green-400" :
+                      decision.action === "avoid" ? "text-red-400" :
+                      decision.action === "watch" ? "text-blue-400" : "text-yellow-400")}>
+                      {decision.action}
+                    </span>
+                    <span className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold uppercase",
+                      decision.direction === "call" ? "border-green-800/50 bg-green-900/20 text-green-300" :
+                      decision.direction === "put" ? "border-red-800/50 bg-red-900/20 text-red-300" :
+                      "border-gray-700 bg-gray-800/70 text-gray-300")}>
+                      {decision.direction}
+                    </span>
+                    <span className={cn("text-sm font-mono", confidenceColor(decision.confidence))}>
+                      {decision.confidence_pct}% confidence
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-gray-300 leading-relaxed">{decision.reason}</p>
+                  <p className="mt-2 text-xs text-gray-500 leading-relaxed">{decision.best_next_step}</p>
+                </div>
+                <div className="grid grid-cols-3 gap-2 lg:w-[360px]">
+                  {[
+                    { label: "Entry", value: fmtPrice(decision.entry_price), color: "text-gray-200" },
+                    { label: "Target", value: fmtPrice(decision.target), color: "text-green-400" },
+                    { label: "Stop", value: fmtPrice(decision.stop), color: "text-red-400" },
+                  ].map(({ label, value, color }) => (
+                    <div key={label} className="rounded-lg bg-[#0a0e1a]/70 border border-[#1f2937] p-2.5">
+                      <div className="text-[10px] text-gray-500 uppercase tracking-wide">{label}</div>
+                      <div className={cn("mt-1 text-sm font-bold font-mono truncate", color)}>{value}</div>
+                    </div>
+                  ))}
+                  <div className="col-span-3 flex items-start gap-2 rounded-lg bg-yellow-900/10 border border-yellow-800/20 px-3 py-2 text-xs text-yellow-600">
+                    <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                    <span className="leading-relaxed">{decision.risk}</span>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -431,6 +486,67 @@ function ConsolePageInner() {
                   </div>
                 </div>
               </div>
+
+              {/* Participation pressure */}
+              {participation?.available && (
+                <div className={cn("border rounded-xl p-4",
+                  participation.outcome_impact?.direction === "bullish" ? "bg-green-900/10 border-green-800/30" :
+                  participation.outcome_impact?.direction === "bearish" ? "bg-red-900/10 border-red-800/30" :
+                  "bg-[#111827] border-[#1f2937]")}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-gray-300">
+                      <Users size={13} className="text-cyan-400" />
+                      Participation
+                    </div>
+                    <span className={cn("text-[10px] uppercase font-semibold",
+                      participation.outcome_impact?.direction === "bullish" ? "text-green-400" :
+                      participation.outcome_impact?.direction === "bearish" ? "text-red-400" : "text-gray-500")}>
+                      {(participation.pressure_label || "balanced").replaceAll("_", " ")}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <div className="bg-green-900/20 rounded-xl p-2">
+                      <div className="text-[10px] text-gray-500">Est. Buying</div>
+                      <div className="text-lg font-bold font-mono text-green-400">
+                        {(participation.buy_volume_pct ?? 0).toFixed(1)}%
+                      </div>
+                      <div className="text-[10px] text-gray-600">{fmtVolume(participation.estimated_buy_volume)}</div>
+                    </div>
+                    <div className="bg-red-900/20 rounded-xl p-2">
+                      <div className="text-[10px] text-gray-500">Est. Selling</div>
+                      <div className="text-lg font-bold font-mono text-red-400">
+                        {(participation.sell_volume_pct ?? 0).toFixed(1)}%
+                      </div>
+                      <div className="text-[10px] text-gray-600">{fmtVolume(participation.estimated_sell_volume)}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5 text-[10px] text-gray-500">
+                    <div className="flex justify-between">
+                      <span>Net Volume</span>
+                      <span className={cn("font-mono",
+                        (participation.net_volume ?? 0) >= 0 ? "text-green-400" : "text-red-400")}>
+                        {(participation.net_volume ?? 0) >= 0 ? "+" : "-"}{fmtVolume(Math.abs(participation.net_volume ?? 0))}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Conviction</span>
+                      <span className="font-mono text-gray-300">{Math.round((participation.conviction ?? 0) * 100)}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Volume vs Prior</span>
+                      <span className="font-mono text-gray-300">{(participation.relative_volume ?? 1).toFixed(2)}×</span>
+                    </div>
+                  </div>
+
+                  {participation.outcome_impact?.description && (
+                    <p className="mt-3 pt-3 border-t border-[#1f2937] text-xs text-gray-400 leading-relaxed">
+                      {participation.outcome_impact.description}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Bollinger squeeze */}
               {patterns?.bollinger_squeeze && (

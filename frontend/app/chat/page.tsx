@@ -1,15 +1,16 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Send, Trash2, Zap, User, Bot, Loader2, AlertTriangle,
   Plus, MessageSquare, Pencil, Check, X, Clock,
   TrendingUp, TrendingDown, Minus, BarChart2, ExternalLink,
-  BrainCircuit, Globe, Mic, MicOff, Volume2, VolumeX,
+  BrainCircuit, Globe, Mic, MicOff, Volume2, VolumeX, Target, BookOpen,
 } from "lucide-react";
-import { api, type ChatResponse, type ChatSession, type FullAnalysis, type SimulationResult } from "@/lib/api";
+import { api, type ChatResponse, type ChatSession, type FullAnalysis, type SimulationResult, type WhatIfResult, type TutorialState } from "@/lib/api";
 import { getSessionId, cn, fmtPrice, fmtPct, changeColor, confidenceColor, directionColor } from "@/lib/utils";
 
 interface Message {
@@ -19,6 +20,8 @@ interface Message {
   symbols?: string[];
   timestamp: Date;
   simulation?: SimulationResult;
+  whatIf?: WhatIfResult;
+  tutorial?: TutorialState;
   triggeredActions?: string[];
 }
 
@@ -57,6 +60,61 @@ function InlineSimulation({ sim }: { sim: SimulationResult }) {
       <a href={`/simulate`} className="block text-center text-[10px] text-blue-400 hover:text-blue-300 transition-colors pt-1">
         Open full simulation →
       </a>
+    </div>
+  );
+}
+
+function InlineWhatIf({ result }: { result: WhatIfResult }) {
+  const favorable = result.recommendation === "favorable";
+  const mixed = result.recommendation === "mixed";
+  return (
+    <div className={cn("mt-2 border rounded-xl p-3 text-xs space-y-2",
+      favorable ? "bg-green-900/10 border-green-800/30" :
+      mixed ? "bg-yellow-900/10 border-yellow-800/30" :
+      "bg-red-900/10 border-red-800/30")}>
+      <div className="flex items-center gap-2">
+        <Target size={12} className={favorable ? "text-green-400" : mixed ? "text-yellow-400" : "text-red-400"} />
+        <span className="font-semibold text-gray-200">{result.symbol} — What-if</span>
+        <span className="ml-auto text-[10px] uppercase text-gray-500">{result.direction}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="bg-[#111827] rounded-lg p-2">
+          <div className="text-base font-bold font-mono text-green-400">{result.reward_pct ?? "—"}%</div>
+          <div className="text-[10px] text-gray-600">Reward</div>
+        </div>
+        <div className="bg-[#111827] rounded-lg p-2">
+          <div className="text-base font-bold font-mono text-red-400">{result.risk_pct ?? "—"}%</div>
+          <div className="text-[10px] text-gray-600">Risk</div>
+        </div>
+        <div className="bg-[#111827] rounded-lg p-2">
+          <div className={cn("text-base font-bold font-mono", (result.risk_reward ?? 0) >= 1.8 ? "text-green-400" : "text-yellow-400")}>
+            {result.risk_reward ?? "—"}
+          </div>
+          <div className="text-[10px] text-gray-600">R/R</div>
+        </div>
+      </div>
+      <div className="text-[10px] text-gray-500 leading-relaxed">{result.next_step}</div>
+    </div>
+  );
+}
+
+function InlineTutorial({ tutorial }: { tutorial: TutorialState }) {
+  const step = tutorial.step;
+  return (
+    <div className="mt-2 bg-blue-900/10 border border-blue-800/30 rounded-xl p-3 text-xs space-y-2">
+      <div className="flex items-center gap-2">
+        <BookOpen size={12} className="text-blue-400" />
+        <span className="font-semibold text-gray-200">Tutorial</span>
+        <span className="ml-auto text-[10px] text-blue-400">{tutorial.complete_pct}%</span>
+      </div>
+      <div>
+        <div className="text-sm font-semibold text-white">{step.title}</div>
+        <div className="text-[10px] text-gray-500 leading-relaxed mt-0.5">{step.goal}</div>
+      </div>
+      <button onClick={() => window.location.href = step.page}
+        className="text-[10px] bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg transition-colors">
+        Open step
+      </button>
     </div>
   );
 }
@@ -250,6 +308,7 @@ function SymbolPanel({ symbol, onClose }: { symbol: string; onClose: () => void 
 // ── Main chat page ────────────────────────────────────────────────────────────
 
 export default function ChatPage() {
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -399,10 +458,20 @@ export default function ChatPage() {
       if (!voiceUnlocked) unlockVoice();
 
       const res: ChatResponse = await api.chat(msg, sessionId, voiceMode);
+      if (res.app_commands?.length) {
+        for (const cmd of res.app_commands) {
+          if (cmd.type === "navigate" && cmd.path) router.push(cmd.path);
+          if (cmd.type === "analyze" && cmd.symbol) router.push(`/console?symbol=${encodeURIComponent(cmd.symbol)}`);
+          if (cmd.type === "simulate" && cmd.symbol) router.push(`/simulate?symbol=${encodeURIComponent(cmd.symbol)}&years=${cmd.years ?? 5}`);
+          if (cmd.type === "watchlist_add" && cmd.symbol) api.addToWatchlist(sessionId, cmd.symbol).catch(() => {});
+        }
+      }
       setMessages((prev) => [...prev, {
         role: "assistant", content: res.response,
         intent: res.intent, symbols: res.symbols, timestamp: new Date(),
         simulation: res.simulation,
+        whatIf: res.what_if,
+        tutorial: res.tutorial,
         triggeredActions: res.triggered_actions,
       }]);
       if (res.active_symbol) setActiveSymbol(res.active_symbol);
@@ -420,7 +489,7 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
     }
-  }, [loading, sessionId, loadSessions, voiceMode, speak, voiceUnlocked, unlockVoice]);
+  }, [loading, sessionId, loadSessions, voiceMode, speak, voiceUnlocked, unlockVoice, router]);
 
   // Voice recognition setup
   useEffect(() => {
@@ -597,13 +666,17 @@ export default function ChatPage() {
               <div>
                 <h2 className="text-lg font-semibold text-white mb-2">Nexus AI Trading Assistant</h2>
                 <p className="text-sm text-gray-500 max-w-md leading-relaxed">
-                  Mention any ticker and Nexus will pull up live analysis, call/put predictions, and event intelligence automatically.
-                  Say "simulate Apple from 1995 to 2000" and Nexus will run it and explain the results.
+                  Mention any global ticker or company and Nexus will pull up analysis, call/put predictions, and event intelligence automatically.
+                  Say "analyze Toyota Japan" or "simulate ASML Amsterdam five years" and Nexus will keep it simple.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2 justify-center">
                 {(memorySuggestions.length > 0 ? memorySuggestions : [
                   "Analyze AAPL for me",
+                  "Analyze Toyota Japan",
+                  "Start tutorial mode",
+                  "What if AAPL goes to 240 with a stop at 225?",
+                  "Check ASML Amsterdam",
                   "Simulate NVDA over the last 5 years",
                   "Should I buy TSLA calls?",
                   "How accurate have your predictions been?",
@@ -657,6 +730,8 @@ export default function ChatPage() {
                 </div>
                 {/* Inline simulation result */}
                 {msg.simulation && <InlineSimulation sim={msg.simulation} />}
+                {msg.whatIf && <InlineWhatIf result={msg.whatIf} />}
+                {msg.tutorial && <InlineTutorial tutorial={msg.tutorial} />}
               </div>
               {msg.role === "user" && (
                 <div className="w-7 h-7 rounded-lg bg-gray-700 flex items-center justify-center flex-shrink-0 mt-0.5">
